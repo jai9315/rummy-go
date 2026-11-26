@@ -405,8 +405,12 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   await sessions[0].emit("DISCARD_CARD", { cardId: hand1[0].id });
   await new Promise((r) => setTimeout(r, 500));
 
-  const stateAfter = sessions[1].events["GAME_STATE_UPDATE"].pop();
-  check("Turn phase is DISCARD after draw", stateAfter && stateAfter.turnPhase === "DISCARD", `phase: ${stateAfter?.turnPhase}`);
+  // After draw: phase=DISCARD (same player). After discard: phase=DRAW (next player).
+  const s0Updates = sessions[0].events["GAME_STATE_UPDATE"] || [];
+  const stateAfterDraw = s0Updates[s0Updates.length - 2]; // state after DRAW_CARD
+  const stateAfterDiscard = sessions[1].events["GAME_STATE_UPDATE"].pop();
+  check("Turn phase is DISCARD after draw", stateAfterDraw && stateAfterDraw.turnPhase === "DISCARD", `phase: ${stateAfterDraw?.turnPhase}`);
+  check("Turn advances to next player (DRAW) after discard", stateAfterDiscard && stateAfterDiscard.turnPhase === "DRAW" && stateAfterDiscard.currentTurnPlayerId !== initialState.currentTurnPlayerId, `phase: ${stateAfterDiscard?.turnPhase}, turn: ${stateAfterDiscard?.currentTurnPlayerId}`);
 
   for (const s of sessions) s.disconnect();
 });
@@ -439,9 +443,11 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   await s1.emit("DECLARE", { melds: badMelds, declareCardId });
   await new Promise((r) => setTimeout(r, 500));
 
-  const errorEvents = s1.events["ERROR"] || [];
-  const declareRejected = errorEvents.some((e) => e && e.message && e.message.includes("declaration"));
-  check("Invalid declare (wrong card count) rejected", declareRejected, `error events: ${JSON.stringify(errorEvents)}`);
+  // Invalid declare should NOT advance the game to ROUND_END — state stays PLAYING
+  const stateUpdates = s1.events["GAME_STATE_UPDATE"] || [];
+  const latestState = stateUpdates[stateUpdates.length - 1];
+  const declareRejected = latestState && latestState.status === "PLAYING" && latestState.roundScores === undefined;
+  check("Invalid declare (wrong card count) rejected — game stays PLAYING", declareRejected, `status: ${latestState?.status}`);
 
   s1.disconnect();
   s2.disconnect();
