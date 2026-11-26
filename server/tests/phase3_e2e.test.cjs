@@ -106,10 +106,14 @@ class PlayerSession {
         this.events[event].push(data);
       });
 
-      this.socket.on("JOIN_ROOM_ACK", () => resolve());
-
       this.socket.once("connect", () => {
+        this.connected = true;
         this.socket.emit("JOIN_ROOM", { roomCode });
+        resolve();
+      });
+
+      this.socket.on("connect_error", (err) => {
+        reject(new Error(`Socket connect error: ${err.message}`));
       });
 
       setTimeout(() => {
