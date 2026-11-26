@@ -1,0 +1,113 @@
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model User {
+  id           String       @id @default(uuid())
+  username     String       @unique
+  email        String?      @unique
+  passwordHash String?
+  profileImage String?
+  isGuest      Boolean      @default(false)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  hostedRooms  Room[]       @relation("RoomHost")
+  roomPlayers  RoomPlayer[]
+  gameResults  GameResult[]
+  sentFriends  Friend[]     @relation("SenderFriends")
+  rcvdFriends  Friend[]     @relation("ReceiverFriends")
+}
+
+model Friend {
+  id         String   @id @default(uuid())
+  senderId   String
+  receiverId String
+  status     String   @default("PENDING") // PENDING, ACCEPTED, REJECTED
+  createdAt  DateTime @default(now())
+
+  sender     User     @relation("SenderFriends", fields: [senderId], references: [id], onDelete: Cascade)
+  receiver   User     @relation("ReceiverFriends", fields: [receiverId], references: [id], onDelete: Cascade)
+
+  @@unique([senderId, receiverId])
+}
+
+model Room {
+  id           String       @id @default(uuid())
+  roomCode     String       @unique
+  hostId       String
+  roomName     String
+  maxPlayers   Int          @default(6)
+  status       String       @default("WAITING") // WAITING, PLAYING, FINISHED
+  passwordHash String?
+  roundCount   Int          @default(1)
+  entryPoints  Int          @default(80)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
+
+  host         User         @relation("RoomHost", fields: [hostId], references: [id], onDelete: Cascade)
+  players      RoomPlayer[]
+  games        Game[]
+}
+
+model RoomPlayer {
+  id               String   @id @default(uuid())
+  roomId           String
+  userId           String
+  seatNumber       Int
+  isReady          Boolean  @default(false)
+  connectionStatus String   @default("CONNECTED") // CONNECTED, DISCONNECTED
+  joinedAt         DateTime @default(now())
+
+  room             Room     @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  user             User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([roomId, userId])
+  @@unique([roomId, seatNumber])
+}
+
+model Game {
+  id                  String       @id @default(uuid())
+  roomId              String
+  gameStatus          String       @default("IN_PROGRESS") // IN_PROGRESS, COMPLETED, ABORTED
+  roundNumber         Int          @default(1)
+  currentTurnPlayerId String?
+  wildJokerCard       String?
+  createdAt           DateTime     @default(now())
+  completedAt         DateTime?
+
+  room                Room         @relation(fields: [roomId], references: [id], onDelete: Cascade)
+  actions             GameAction[]
+  results             GameResult[]
+}
+
+model GameAction {
+  id         String   @id @default(uuid())
+  gameId     String
+  playerId   String
+  actionType String   // DRAW_CLOSED, DRAW_OPEN, DISCARD, DROP, DECLARE
+  actionData String?  // JSON stringified public data
+  createdAt  DateTime @default(now())
+
+  game       Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+}
+
+model GameResult {
+  id          String   @id @default(uuid())
+  gameId      String
+  playerId    String
+  points      Int      @default(0)
+  rank        Int      @default(1)
+  isWinner    Boolean  @default(false)
+  hasDropped  Boolean  @default(false)
+  scoreDetail String?  // JSON breakdown
+  createdAt   DateTime @default(now())
+
+  game        Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  player      User     @relation(fields: [playerId], references: [id], onDelete: Cascade)
+}

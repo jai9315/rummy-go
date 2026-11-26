@@ -1,0 +1,33 @@
+# Production Dockerfile for Rummy Backend Server
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package*.json ./
+COPY server/tsconfig.json ./server/
+COPY prisma ./prisma/
+
+RUN npm install
+
+COPY server/src ./server/src
+RUN npx prisma generate
+RUN npx tsc -p server/tsconfig.json
+
+# Runner stage
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV PORT=4000
+
+COPY package*.json ./
+RUN npm install --only=production
+
+COPY --from=builder /app/prisma ./prisma
+COPY --from=builder /app/server/dist ./server/dist
+COPY --from=builder /app/node_modules/@prisma ./node_modules/@prisma
+
+EXPOSE 4000
+
+CMD ["node", "server/dist/index.js"]

@@ -1,0 +1,72 @@
+import cors from "cors";
+import dotenv from "dotenv";
+import express from "express";
+import http from "http";
+import { Server } from "socket.io";
+import { authRouter } from "./routes/auth";
+import { friendsRouter } from "./routes/friends";
+import { livekitRouter } from "./routes/livekit";
+import { roomsRouter } from "./routes/rooms";
+import { socketAuthMiddleware } from "./socket/authMiddleware";
+import { RoomManager } from "./socket/roomManager";
+
+dotenv.config();
+
+const app = express();
+const server = http.createServer(app);
+
+const PORT = parseInt(process.env.PORT || "4000", 10);
+const CLIENT_URL = process.env.CLIENT_URL || "http://localhost:3000";
+
+// Middleware
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "DELETE"],
+    credentials: true,
+  })
+);
+app.use(express.json());
+
+// REST Routes
+app.use("/api/auth", authRouter);
+app.use("/api/rooms", roomsRouter);
+app.use("/api/livekit", livekitRouter);
+app.use("/api/friends", friendsRouter);
+
+// Health Check
+app.get("/api/health", (_req, res) => {
+  res.json({
+    status: "ok",
+    service: "Indian Rummy Server",
+    timestamp: new Date().toISOString(),
+  });
+});
+
+// Socket.IO Setup
+const io = new Server(server, {
+  cors: {
+    origin: "*",
+    methods: ["GET", "POST"],
+  },
+  pingTimeout: 30000,
+  pingInterval: 10000,
+});
+
+io.use(socketAuthMiddleware);
+
+const roomManager = new RoomManager(io);
+io.on("connection", (socket) => {
+  roomManager.handleConnection(socket);
+});
+
+// Start Server when run directly
+if (require.main === module) {
+  server.listen(PORT, () => {
+    console.log(`♠♥♦♣ Rummy Server is running on port ${PORT}`);
+    console.log(`LiveKit Video Token endpoint: http://localhost:${PORT}/api/livekit/token`);
+    console.log(`Socket.IO endpoint ready`);
+  });
+}
+
+export { app, io, server };
