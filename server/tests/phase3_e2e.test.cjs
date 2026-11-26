@@ -289,6 +289,9 @@ test("PHASE 3: Each player sees only their own cards", async (t) => {
     sessions.push(s);
   }
 
+  // Wait for all JOIN_ROOMs to be fully processed before toggling ready
+  await new Promise((r) => setTimeout(r, 1000));
+
   // Make all non-host players ready before starting
   await makeAllPlayersReady(sessions, 0);
 
@@ -371,6 +374,9 @@ test("PHASE 3: Turn synchronization works", async (t) => {
     await s.connect(roomCode);
     sessions.push(s);
   }
+
+  // Wait for all JOIN_ROOMs to be fully processed before toggling ready
+  await new Promise((r) => setTimeout(r, 1000));
 
   // Make all non-host players ready before starting
   // (TOGGLE_READY updates in-memory lobby state; REST reads from DB and won't reflect it)
