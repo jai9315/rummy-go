@@ -171,7 +171,16 @@ async function createRoom(token) {
 }
 
 // ---------------------------------------------------------------------------
-// PHASE 3 TESTS
+// Health check (top-level, runs first)
+// ---------------------------------------------------------------------------
+test("PHASE 3: Server is reachable", async (t) => {
+  const res = await apiGet("/health");
+  assert.strictEqual(res.status, 200, `Health check failed: ${res.status}`);
+  console.log("Server is reachable ✓");
+});
+
+// ---------------------------------------------------------------------------
+// PHASE 3 TESTS (all at top level for node:test)
 // ---------------------------------------------------------------------------
 
 test("PHASE 3: Four players join same private room", async (t) => {
@@ -432,31 +441,13 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// Run all tests
+// Summary (runs after all tests)
 // ---------------------------------------------------------------------------
-async function main() {
-  console.log("========================================");
-  console.log("PHASE 3 E2E Multiplayer Tests");
-  console.log("========================================");
-  console.log(`Server: ${BASE_URL}`);
-
-  try {
-    await apiGet("/health");
-    console.log("Server is reachable ✓");
-  } catch (e) {
-    console.error("ERROR: Cannot reach server at", BASE_URL);
-    console.error("Make sure the backend is running: npm run start:server");
-    process.exit(1);
-  }
-
+test("PHASE 3: Test summary", async (t) => {
   console.log("\n========================================");
   console.log(`Results: ${passed} passed, ${failed} failed`);
   console.log("========================================");
-
-  process.exit(failed > 0 ? 1 : 0);
-}
-
-main().catch((err) => {
-  console.error("Test runner error:", err);
-  process.exit(1);
+  if (failed > 0) {
+    t.fail(`${failed} test(s) failed`);
+  }
 });
