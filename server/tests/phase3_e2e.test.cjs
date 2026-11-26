@@ -142,10 +142,13 @@ class PlayerSession {
 // Helper: register + login a user, return token
 // ---------------------------------------------------------------------------
 async function createUser(suffix) {
-  const username = `testuser_${suffix}_${Date.now()}`;
+  // Username must be 3-20 chars (server validation). Keep it short and unique.
+  const timestamp = Date.now().toString().slice(-6);
+  const username = `tu_${suffix}_${timestamp}`;
   const email = `${username}@example.com`;
   const password = "TestPass123!";
 
+  // Try register (may fail if user already exists — that's OK)
   await apiPost("/auth/register", { username, email, password }).catch(() => {});
 
   const loginRes = await apiPost("/auth/login", { login: username, password });
