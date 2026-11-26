@@ -147,6 +147,20 @@ class PlayerSession {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: make all non-host players ready (server requires all ready to start)
+// ---------------------------------------------------------------------------
+async function makeAllPlayersReady(sessions, hostIndex = 0) {
+  for (let i = 0; i < sessions.length; i++) {
+    if (i !== hostIndex) {
+      await sessions[i].emit("TOGGLE_READY");
+      await new Promise((r) => setTimeout(r, 300));
+    }
+  }
+  // Give the lobby time to propagate ready states
+  await new Promise((r) => setTimeout(r, 500));
+}
+
+// ---------------------------------------------------------------------------
 // Helper: register + login a user, return token
 // ---------------------------------------------------------------------------
 async function createUser(suffix) {
@@ -237,6 +251,9 @@ test("PHASE 3: Each player receives exactly 13 cards", async (t) => {
 
   await new Promise((r) => setTimeout(r, 1500));
 
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady(sessions, 0);
+
   log("Starting game...");
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1500));
@@ -271,6 +288,9 @@ test("PHASE 3: Each player sees only their own cards", async (t) => {
     await s.connect(roomCode);
     sessions.push(s);
   }
+
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady(sessions, 0);
 
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1500));
@@ -315,6 +335,9 @@ test("PHASE 3: Draw and discard work correctly", async (t) => {
   await s2.connect(roomCode);
   await new Promise((r) => setTimeout(r, 500));
 
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady([s1, s2], 0);
+
   log("Starting game...");
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
@@ -349,6 +372,9 @@ test("PHASE 3: Turn synchronization works", async (t) => {
     sessions.push(s);
   }
 
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady(sessions, 0);
+
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
@@ -379,6 +405,9 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   await s1.connect(roomCode);
   await s2.connect(roomCode);
   await new Promise((r) => setTimeout(r, 500));
+
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady([s1, s2], 0);
 
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
@@ -444,6 +473,9 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
   await s1.connect(roomCode);
   await s2.connect(roomCode);
   await new Promise((r) => setTimeout(r, 500));
+
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady([s1, s2], 0);
 
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
