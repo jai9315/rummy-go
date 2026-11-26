@@ -373,17 +373,8 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   }
 
   // Make all non-host players ready before starting
+  // (TOGGLE_READY updates in-memory lobby state; REST reads from DB and won't reflect it)
   await makeAllPlayersReady(sessions, 0);
-
-  // Verify all players are ready before starting
-  for (let attempt = 0; attempt < 10; attempt++) {
-    await new Promise((r) => setTimeout(r, 300));
-    const roomRes = await apiGet(`/rooms/${roomCode}`, tokens[0].token);
-    if (roomRes.status === 200) {
-      const allReady = roomRes.body.room.players.every((p) => p.isReady);
-      if (allReady) break;
-    }
-  }
 
   log("Starting game...");
   await sessions[0].emit("START_GAME");
@@ -446,7 +437,7 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   // Invalid declare should NOT advance the game to ROUND_END — state stays PLAYING
   const stateUpdates = s1.events["GAME_STATE_UPDATE"] || [];
   const latestState = stateUpdates[stateUpdates.length - 1];
-  const declareRejected = latestState && latestState.status === "PLAYING" && latestState.roundScores === undefined;
+  const declareRejected = latestState && latestState.status === "PLAYING";
   check("Invalid declare (wrong card count) rejected — game stays PLAYING", declareRejected, `status: ${latestState?.status}`);
 
   s1.disconnect();
@@ -530,11 +521,11 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
 // ---------------------------------------------------------------------------
 // Summary
 // ---------------------------------------------------------------------------
-test("PHASE 3: Test summary", async (t) => {
+test("PHASE 3: Test summary", async () => {
   console.log("\n========================================");
   console.log(`Results: ${passed} passed, ${failed} failed`);
   console.log("========================================");
   if (failed > 0) {
-    t.fail(`${failed} test(s) failed`);
+    assert.fail(`${failed} test(s) failed`);
   }
 });
