@@ -5,7 +5,7 @@ import { prisma } from "../db/prisma";
 
 export const authRouter = Router();
 
-const JWT_SECRET = process.env.JWT_SECRET || "default_super_secret_jwt_key_2026";
+const JWT_SECRET: string = process.env.JWT_SECRET!;
 
 export interface AuthTokenPayload {
   userId: string;

@@ -20,6 +20,7 @@ export interface PlayerInternalState {
   score: number;
   totalScore: number;
   consecutiveTimeouts: number;
+  hasDrawn: boolean; // true once the player has drawn at least one card this round
   melds?: Card[][];
 }
 
@@ -48,7 +49,6 @@ export class Game {
   private discardPile: Card[] = [];
   private wildJoker!: Card;
 
-  private turnTimer: NodeJS.Timeout | null = null;
   private timerInterval: NodeJS.Timeout | null = null;
   private turnTimeLimit: number;
   private turnTimeRemaining: number;
@@ -98,6 +98,7 @@ export class Game {
       score: 0,
       totalScore: 0,
       consecutiveTimeouts: 0,
+      hasDrawn: false,
     });
   }
 
@@ -156,6 +157,7 @@ export class Game {
       activePlayers[i].hand = hands[i];
       activePlayers[i].hasDropped = false;
       activePlayers[i].consecutiveTimeouts = 0;
+      activePlayers[i].hasDrawn = false;
     }
 
     // Cut a card from remaining deck to be Wild Joker
@@ -212,6 +214,16 @@ export class Game {
       if (this.deck.count === 0) {
         this.reshuffleDiscardIntoDeck();
       }
+      // If closed deck is still empty (nothing to reshuffle), fall back to discard pile
+      // so the game cannot stall. If discard is also empty, no cards are available.
+      if (this.deck.count === 0) {
+        if (this.discardPile.length === 0) {
+          throw new Error("No cards available to draw");
+        }
+        source = "DISCARD";
+      }
+    }
+    if (source === "CLOSED") {
       drawnCard = this.deck.draw();
       if (!drawnCard) throw new Error("No cards available to draw");
 
@@ -230,6 +242,7 @@ export class Game {
     }
 
     player.hand.push(drawnCard);
+    player.hasDrawn = true;
     player.consecutiveTimeouts = 0;
     this.turnPhase = "DISCARD";
 
@@ -304,8 +317,11 @@ export class Game {
     const player = this.players.get(playerId)!;
 
     // First drop penalty = 20, Middle drop penalty = 40
-    // If player has not drawn in previous turns -> first drop
-    const isFirstDrop = player.hand.length === 13 && this.currentTurnIndex === 0;
+    // First drop = player drops before drawing AND no other player has dropped yet this round
+    const otherDropped = Array.from(this.players.values()).some(
+      (p) => p.id !== playerId && p.hasDropped
+    );
+    const isFirstDrop = player.hand.length === 13 && !player.hasDrawn && !otherDropped;
     const penalty = isFirstDrop ? 20 : 40;
 
     player.hasDropped = true;
@@ -381,26 +397,58 @@ export class Game {
       };
     }
 
-    // Verify all meld card IDs exist in player hand (excluding declare card)
-    const handCardIds = new Set(player.hand.map((c) => c.id));
-    handCardIds.delete(declareCardId);
+    // Verify all meld card IDs exist in player hand (excluding declare card),
+    // that no card ID is reused across multiple melds, and rebuild the melds
+    // using the SERVER-HELD card data. Card rank, suit, and joker status are
+    // always derived from the server-held hand — never trusted from the client.
+    const handCardById = new Map<string, Card>();
+    for (const c of player.hand) {
+      handCardById.set(c.id, c);
+    }
+    handCardById.delete(declareCardId);
 
-    for (const c of allMeldCards) {
-      if (!handCardIds.has(c.id)) {
-        return {
-          isValid: false,
-          reason: "Melds contain invalid or forged cards",
-          publicState: this.getPublicState(),
-        };
+    const usedCardIds = new Set<string>();
+    const serverMelds: Card[][] = [];
+
+    for (const m of melds) {
+      const serverMeld: Card[] = [];
+      for (const c of m) {
+        if (!c || typeof c.id !== "string") {
+          return {
+            isValid: false,
+            reason: "Melds contain invalid or forged cards",
+            publicState: this.getPublicState(),
+          };
+        }
+        // Reject reuse of the same card across multiple melds
+        if (usedCardIds.has(c.id)) {
+          return {
+            isValid: false,
+            reason: "Melds contain invalid or forged cards",
+            publicState: this.getPublicState(),
+          };
+        }
+        // Look up the actual card from the server-held hand
+        const actualCard = handCardById.get(c.id);
+        if (!actualCard) {
+          return {
+            isValid: false,
+            reason: "Melds contain invalid or forged cards",
+            publicState: this.getPublicState(),
+          };
+        }
+        usedCardIds.add(c.id);
+        serverMeld.push(actualCard);
       }
+      serverMelds.push(serverMeld);
     }
 
-    // 3. Run validation through Evaluator
-    const validation = Evaluator.validateDeclaration(melds);
+    // 3. Run validation through Evaluator using SERVER-HELD card data only
+    const validation = Evaluator.validateDeclaration(serverMelds);
 
     if (validation.isValid) {
       // Valid Declaration! Winner gets 0 penalty points
-      player.melds = melds;
+      player.melds = serverMelds;
       const scores: Record<string, { points: number; totalScore: number; reason: string }> = {
         [player.id]: { points: 0, totalScore: player.totalScore, reason: "Valid Declaration (Winner)" },
       };
@@ -465,8 +513,11 @@ export class Game {
    * Reshuffle discard pile back into closed deck when closed deck runs out
    */
   private reshuffleDiscardIntoDeck(): void {
+    // Nothing to reshuffle: only the top discard card (or fewer) remains.
+    // Leave the deck empty; drawCard will report no cards available,
+    // and the player may still draw from the discard pile.
     if (this.discardPile.length <= 1) {
-      throw new Error("Not enough cards to reshuffle");
+      return;
     }
     const topCard = this.discardPile.pop()!;
     const cardsToShuffle = [...this.discardPile];
@@ -499,6 +550,10 @@ export class Game {
     this.startTurnTimer();
   }
 
+  public stopTimer(): void {
+    this.clearTimers();
+  }
+
   private startTurnTimer(): void {
     this.clearTimers();
     this.turnTimeRemaining = this.turnTimeLimit;
@@ -518,8 +573,9 @@ export class Game {
     if (!player) return;
 
     player.consecutiveTimeouts++;
+    const timeoutCount = player.consecutiveTimeouts;
 
-    if (player.consecutiveTimeouts >= 3) {
+    if (timeoutCount >= 3) {
       // 3 consecutive timeouts -> auto drop
       this.drop(player.id);
       return;
@@ -543,16 +599,15 @@ export class Game {
       }
     }
 
+    // drawCard/discardCard reset consecutiveTimeouts to 0; restore the timeout count
+    player.consecutiveTimeouts = timeoutCount;
+
     if (this.onTurnTimeout) {
       this.onTurnTimeout(player.id);
     }
   }
 
   private clearTimers(): void {
-    if (this.turnTimer) {
-      clearTimeout(this.turnTimer);
-      this.turnTimer = null;
-    }
     if (this.timerInterval) {
       clearInterval(this.timerInterval);
       this.timerInterval = null;

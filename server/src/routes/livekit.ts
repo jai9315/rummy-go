@@ -5,10 +5,10 @@ import { AuthTokenPayload } from "./auth";
 
 export const livekitRouter = Router();
 
-const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY || "devkey";
-const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET || "secret";
-const LIVEKIT_URL = process.env.LIVEKIT_URL || "wss://demo.livekit.cloud";
-const JWT_SECRET = process.env.JWT_SECRET || "default_super_secret_jwt_key_2026";
+const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
+const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
+const LIVEKIT_URL = process.env.LIVEKIT_URL;
+const JWT_SECRET: string = process.env.JWT_SECRET!;
 
 /**
  * Generates secure server-side LiveKit room access token.

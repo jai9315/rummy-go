@@ -4,7 +4,7 @@ import { prisma } from "../db/prisma";
 import { AuthTokenPayload } from "./auth";
 
 export const friendsRouter = Router();
-const JWT_SECRET = process.env.JWT_SECRET || "default_super_secret_jwt_key_2026";
+const JWT_SECRET: string = process.env.JWT_SECRET!;
 
 function authenticate(req: Request, res: Response, next: () => void): void {
   const authHeader = req.headers.authorization;
@@ -37,8 +37,8 @@ friendsRouter.get("/", authenticate, async (req: Request, res: Response): Promis
     });
 
     const accepted = friends
-      .filter((f) => f.status === "ACCEPTED")
-      .map((f) => {
+      .filter((f: any) => f.status === "ACCEPTED")
+      .map((f: any) => {
         const friendUser = f.senderId === user.userId ? f.receiver : f.sender;
         return {
           id: f.id,
@@ -48,8 +48,8 @@ friendsRouter.get("/", authenticate, async (req: Request, res: Response): Promis
       });
 
     const pendingRequests = friends
-      .filter((f) => f.status === "PENDING" && f.receiverId === user.userId)
-      .map((f) => ({
+      .filter((f: any) => f.status === "PENDING" && f.receiverId === user.userId)
+      .map((f: any) => ({
         id: f.id,
         sender: f.sender,
         createdAt: f.createdAt,

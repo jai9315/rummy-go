@@ -5,7 +5,7 @@ import { prisma } from "../db/prisma";
 import { AuthTokenPayload } from "./auth";
 
 export const roomsRouter = Router();
-const JWT_SECRET = process.env.JWT_SECRET || "default_super_secret_jwt_key_2026";
+const JWT_SECRET: string = process.env.JWT_SECRET!;
 
 // Helper to generate unique 6-character room code (e.g. "AB12CD")
 function generateRoomCode(): string {
@@ -122,7 +122,7 @@ roomsRouter.get("/:code", async (req: Request, res: Response): Promise<void> => 
         entryPoints: room.entryPoints,
         status: room.status,
         host: room.host,
-        players: room.players.map((rp) => ({
+        players: room.players.map((rp: any) => ({
           userId: rp.userId,
           username: rp.user.username,
           profileImage: rp.user.profileImage,

@@ -100,9 +100,11 @@ export class RoomManager {
           // Synchronously store in memory so subsequent connections immediately see the occupied seat
           playersMap.set(user.userId, existingPlayer);
 
-          // Update Prisma RoomPlayer in background
-          prisma.roomPlayer
-            .upsert({
+          // Persist RoomPlayer to DB before broadcasting lobby.
+          // If the DB write fails, we still proceed with the in-memory state
+          // (the player is already in the room) but log the error explicitly.
+          try {
+            await prisma.roomPlayer.upsert({
               where: {
                 roomId_userId: { roomId: room.id, userId: user.userId },
               },
@@ -117,11 +119,16 @@ export class RoomManager {
                 connectionStatus: "CONNECTED",
                 seatNumber: seat,
               },
-            })
-            .catch(() => {});
+            });
+          } catch (dbErr: any) {
+            console.error(
+              `Failed to persist RoomPlayer for user ${user.userId} in room ${code}:`,
+              dbErr?.message || dbErr
+            );
+          }
         }
 
-        // Broadcast updated lobby
+        // Broadcast updated lobby (after DB write attempt so lobby reflects persisted state)
         this.broadcastLobby(code);
 
         // Check if an active game is in progress (Reconnection Handling)
@@ -194,12 +201,7 @@ export class RoomManager {
         const room = await prisma.room.findUnique({ where: { roomCode } });
         if (!room) return;
 
-        await prisma.room.update({
-          where: { roomCode },
-          data: { status: "PLAYING" },
-        });
-
-        // Initialize Game Engine
+        // Initialize Game Engine (in memory first)
         const game = new Game(`game_${roomCode}_${Date.now()}`, room.id, roomCode, {
           turnTimeLimitSeconds: 30,
           onStateUpdate: (state) => {
@@ -223,9 +225,9 @@ export class RoomManager {
           game.setPlayerReady(p.userId, true);
         }
 
-        this.activeGames.set(roomCode, game);
-
-        // Record in DB
+        // Persist to DB before registering the game in memory.
+        // Create the Game record first, then mark the room as PLAYING,
+        // so a failure never leaves the room in PLAYING without a game.
         await prisma.game.create({
           data: {
             id: game.id,
@@ -235,7 +237,13 @@ export class RoomManager {
           },
         });
 
-        // Start game round
+        await prisma.room.update({
+          where: { roomCode },
+          data: { status: "PLAYING" },
+        });
+
+        // Only now register the game and start the round
+        this.activeGames.set(roomCode, game);
         game.startRound();
       } catch (err: any) {
         console.error("START_GAME error:", err);
@@ -353,6 +361,16 @@ export class RoomManager {
         if (game) {
           game.setPlayerConnection(userId, "DISCONNECTED");
           this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", game.getPublicState());
+          // Stop the turn timer if no active (non-dropped) player is connected,
+          // preventing the timer from firing for an abandoned game.
+          const publicState = game.getPublicState();
+          const anyConnected = publicState.players.some(
+            (p) => !p.hasDropped && p.connectionStatus === "CONNECTED"
+          );
+          const hasActive = publicState.players.some((p) => !p.hasDropped);
+          if (hasActive && !anyConnected) {
+            game.stopTimer();
+          }
         }
         this.broadcastLobby(roomCode);
       }

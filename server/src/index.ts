@@ -12,6 +12,26 @@ import { RoomManager } from "./socket/roomManager";
 
 dotenv.config();
 
+// Fail fast if required security / LiveKit configuration is missing.
+// The backend must not start with forgeable secrets or demo credentials.
+function validateEnv(): void {
+  const missing: string[] = [];
+  if (!process.env.JWT_SECRET) missing.push("JWT_SECRET");
+  if (!process.env.LIVEKIT_API_KEY) missing.push("LIVEKIT_API_KEY");
+  if (!process.env.LIVEKIT_API_SECRET) missing.push("LIVEKIT_API_SECRET");
+  if (!process.env.LIVEKIT_URL) missing.push("LIVEKIT_URL");
+  if (missing.length > 0) {
+    console.error(
+      `FATAL: Missing required environment variables: ${missing.join(
+        ", "
+      )}. Set them before starting the server.`
+    );
+    process.exit(1);
+  }
+}
+
+validateEnv();
+
 const app = express();
 const server = http.createServer(app);
 

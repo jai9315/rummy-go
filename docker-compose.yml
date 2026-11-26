@@ -7,15 +7,18 @@ services:
       dockerfile: Dockerfile.server
     ports:
       - "4000:4000"
+    env_file:
+      - .env
     environment:
       - PORT=4000
       - NODE_ENV=production
       - DATABASE_URL=file:./dev.db
-      - JWT_SECRET=production_super_secret_jwt_key_2026_rummy
+      # JWT_SECRET must be set in .env — no fallback allowed (security)
       - CLIENT_URL=http://localhost:3000
-      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY:-devkey}
-      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET:-secret}
-      - LIVEKIT_URL=${LIVEKIT_URL:-wss://demo.livekit.cloud}
+      # LiveKit credentials must be set in .env — no demo fallbacks
+      - LIVEKIT_API_KEY=${LIVEKIT_API_KEY}
+      - LIVEKIT_API_SECRET=${LIVEKIT_API_SECRET}
+      - LIVEKIT_URL=${LIVEKIT_URL}
     volumes:
       - db-data:/app/prisma
     restart: always
@@ -26,6 +29,8 @@ services:
       dockerfile: Dockerfile.client
     ports:
       - "3000:3000"
+    env_file:
+      - .env
     environment:
       - PORT=3000
       - NODE_ENV=production

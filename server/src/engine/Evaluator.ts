@@ -84,8 +84,9 @@ export class Evaluator {
   public static isValidPureSequence(cards: Card[]): boolean {
     if (cards.length < 3) return false;
 
-    // Any printed joker cannot be in a pure sequence
-    if (cards.some((c) => c.isPrintedJoker)) return false;
+    // No joker (printed or wild) can be in a pure sequence.
+    // A wild joker substitute makes a sequence impure, never pure.
+    if (cards.some((c) => c.isPrintedJoker || c.isWildJoker)) return false;
 
     // All natural cards must have identical suit
     const suit = cards[0].suit;
