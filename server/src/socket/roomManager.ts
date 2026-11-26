@@ -294,7 +294,9 @@ export class RoomManager {
 
         // Only now register the game and start the round
         this.activeGames.set(roomCode, game);
+        console.log(`START_GAME: game ${game.id} started in room ${roomCode} with ${activePlayers.length} players`);
         game.startRound();
+        console.log(`START_GAME: game ${game.id} status is now ${game.status}, turn: ${game.getCurrentTurnPlayerId()}`);
       } catch (err: any) {
         console.error("START_GAME error:", err);
         socket.emit("ERROR", { message: err?.message || "Failed to start game" });
