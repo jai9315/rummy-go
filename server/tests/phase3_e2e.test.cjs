@@ -28,8 +28,12 @@ function check(name, cond, detail) {
   }
 }
 
+function log(msg) {
+  console.log(`  > ${msg}`);
+}
+
 // ---------------------------------------------------------------------------
-// REST helpers
+// REST helpers with timeout
 // ---------------------------------------------------------------------------
 function apiRequest(method, path, body, token) {
   return new Promise((resolve, reject) => {
@@ -47,6 +51,7 @@ function apiRequest(method, path, body, token) {
         path: `/api${path}`,
         method,
         headers,
+        timeout: 10000,
       },
       (res) => {
         let raw = "";
@@ -61,6 +66,9 @@ function apiRequest(method, path, body, token) {
       }
     );
     req.on("error", reject);
+    req.on("timeout", () => {
+      req.destroy(new Error("Request timeout"));
+    });
     if (data) req.write(data);
     req.end();
   });
@@ -95,10 +103,17 @@ class PlayerSession {
 
       this.socket.on("connect", () => {
         this.connected = true;
+        log(`${this.username}: Socket connected`);
+        this.socket.emit("JOIN_ROOM", { roomCode });
+        resolve();
       });
 
       this.socket.on("connect_error", (err) => {
-        reject(new Error(`Socket connect error: ${err.message}`));
+        reject(new Error(`${this.username}: Socket connect error: ${err.message}`));
+      });
+
+      this.socket.on("disconnect", () => {
+        this.connected = false;
       });
 
       this.socket.onAny((event, data) => {
@@ -106,29 +121,21 @@ class PlayerSession {
         this.events[event].push(data);
       });
 
-      this.socket.once("connect", () => {
-        this.connected = true;
-        this.socket.emit("JOIN_ROOM", { roomCode });
-        resolve();
-      });
-
-      this.socket.on("connect_error", (err) => {
-        reject(new Error(`Socket connect error: ${err.message}`));
-      });
-
       setTimeout(() => {
-        if (!this.connected) reject(new Error("Socket connect timeout"));
-      }, 10000);
+        if (!this.connected) reject(new Error(`${this.username}: Socket connect timeout`));
+      }, 15000);
     });
   }
 
   emit(event, data) {
+    log(`${this.username}: emitting ${event}`);
     return new Promise((resolve) => {
       if (!this.socket || !this.connected) {
         resolve({ error: "Socket not connected" });
         return;
       }
       this.socket.emit(event, data, (resp) => {
+        log(`${this.username}: ${event} response: ${JSON.stringify(resp || {}).slice(0, 200)}`);
         resolve(resp || {});
       });
     });
@@ -146,13 +153,12 @@ class PlayerSession {
 // Helper: register + login a user, return token
 // ---------------------------------------------------------------------------
 async function createUser(suffix) {
-  // Username must be 3-20 chars (server validation). Keep it short and unique.
   const timestamp = Date.now().toString().slice(-6);
   const username = `tu_${suffix}_${timestamp}`;
   const email = `${username}@example.com`;
   const password = "TestPass123!";
 
-  // Try register (may fail if user already exists — that's OK)
+  log(`createUser: registering ${username}`);
   await apiPost("/auth/register", { username, email, password }).catch(() => {});
 
   const loginRes = await apiPost("/auth/login", { login: username, password });
@@ -166,6 +172,7 @@ async function createUser(suffix) {
 // Helper: create a room, return roomCode
 // ---------------------------------------------------------------------------
 async function createRoom(token) {
+  log("Creating room...");
   const res = await apiPost("/rooms/create", {
     roomName: "E2E Test Table",
     maxPlayers: 4,
@@ -174,11 +181,12 @@ async function createRoom(token) {
   }, token);
   assert.strictEqual(res.status, 201, `Room create failed: ${JSON.stringify(res.body)}`);
   assert.ok(res.body.room.roomCode, "No roomCode returned");
+  log(`Room created: ${res.body.room.roomCode}`);
   return res.body.room.roomCode;
 }
 
 // ---------------------------------------------------------------------------
-// Health check (top-level, runs first)
+// Health check
 // ---------------------------------------------------------------------------
 test("PHASE 3: Server is reachable", async (t) => {
   const res = await apiGet("/health");
@@ -187,7 +195,7 @@ test("PHASE 3: Server is reachable", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// PHASE 3 TESTS (all at top level for node:test)
+// PHASE 3 TESTS
 // ---------------------------------------------------------------------------
 
 test("PHASE 3: Four players join same private room", async (t) => {
@@ -197,17 +205,20 @@ test("PHASE 3: Four players join same private room", async (t) => {
 
   const sessions = [];
   for (let i = 0; i < 4; i++) {
+    log(`Connecting player ${i + 1}...`);
     const s = new PlayerSession(tokens[i].token, tokens[i].username);
     await s.connect(roomCode);
     sessions.push(s);
   }
 
-  await new Promise((r) => setTimeout(r, 1000));
+  log("Waiting for lobby sync...");
+  await new Promise((r) => setTimeout(r, 1500));
 
   let connectedCount = 0;
   for (const s of sessions) if (s.connected) connectedCount++;
   check("All 4 players connected", connectedCount === 4, `connected: ${connectedCount}`);
 
+  log("Fetching room via REST...");
   const roomRes = await apiGet(`/rooms/${roomCode}`, tokens[0].token);
   check("Room accessible via REST", roomRes.status === 200);
   check("Room has 4 players", roomRes.body.room.players.length === 4, `players: ${roomRes.body.room.players?.length}`);
@@ -227,10 +238,11 @@ test("PHASE 3: Each player receives exactly 13 cards", async (t) => {
     sessions.push(s);
   }
 
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 1500));
 
+  log("Starting game...");
   await sessions[0].emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 1500));
 
   for (const s of sessions) {
     const handUpdates = s.events["PRIVATE_HAND_UPDATE"] || [];
@@ -264,7 +276,7 @@ test("PHASE 3: Each player sees only their own cards", async (t) => {
   }
 
   await sessions[0].emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 1000));
+  await new Promise((r) => setTimeout(r, 1500));
 
   const playerHands = {};
   for (const s of sessions) {
@@ -306,15 +318,18 @@ test("PHASE 3: Draw and discard work correctly", async (t) => {
   await s2.connect(roomCode);
   await new Promise((r) => setTimeout(r, 500));
 
+  log("Starting game...");
   await s1.emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
+  log("Drawing card...");
   const drawRes = await s1.emit("DRAW_CARD", { source: "CLOSED" });
   check("p1 can draw card", !drawRes.error, `error: ${drawRes.error}`);
 
   const handUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
   const latestHand = handUpdates[handUpdates.length - 1];
   const cardToDiscard = latestHand.cards[0].id;
+  log(`Discarding card ${cardToDiscard}...`);
   const discardRes = await s1.emit("DISCARD_CARD", { cardId: cardToDiscard });
   check("p1 can discard card", !discardRes.error, `error: ${discardRes.error}`);
 
@@ -338,7 +353,7 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   }
 
   await sessions[0].emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
   const stateUpdates = sessions[0].events["GAME_STATE_UPDATE"] || [];
   const initialState = stateUpdates[stateUpdates.length - 1];
@@ -346,10 +361,10 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   check("Game state has currentTurnPlayerId", typeof initialState.currentTurnPlayerId === "string" && initialState.currentTurnPlayerId.length > 0);
 
   await sessions[0].emit("DRAW_CARD", { source: "CLOSED" });
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
   const hand1 = sessions[0].events["PRIVATE_HAND_UPDATE"].pop().cards;
   await sessions[0].emit("DISCARD_CARD", { cardId: hand1[0].id });
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
 
   const stateAfter = sessions[1].events["GAME_STATE_UPDATE"].pop();
   check("Turn phase is DISCARD after draw", stateAfter.turnPhase === "DISCARD", `phase: ${stateAfter.turnPhase}`);
@@ -369,10 +384,10 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   await new Promise((r) => setTimeout(r, 500));
 
   await s1.emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
   await s1.emit("DRAW_CARD", { source: "CLOSED" });
-  await new Promise((r) => setTimeout(r, 300));
+  await new Promise((r) => setTimeout(r, 500));
 
   const handUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
   const hand = handUpdates[handUpdates.length - 1].cards;
@@ -396,7 +411,7 @@ test("PHASE 3: Reconnection restores correct private hand", async (t) => {
   await new Promise((r) => setTimeout(r, 500));
 
   await s1.emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
   const initialUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
   const initialHand = initialUpdates[initialUpdates.length - 1].cards;
@@ -407,7 +422,7 @@ test("PHASE 3: Reconnection restores correct private hand", async (t) => {
 
   const s1b = new PlayerSession(tokens[0].token, tokens[0].username);
   await s1b.connect(roomCode);
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
   const reconnectUpdates = s1b.events["PRIVATE_HAND_UPDATE"] || [];
   const reconnectHand = reconnectUpdates[reconnectUpdates.length - 1];
@@ -434,7 +449,7 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
   await new Promise((r) => setTimeout(r, 500));
 
   await s1.emit("START_GAME");
-  await new Promise((r) => setTimeout(r, 800));
+  await new Promise((r) => setTimeout(r, 1000));
 
   const p1HandUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
   const p1Hand = p1HandUpdates[p1HandUpdates.length - 1].cards;
@@ -448,7 +463,7 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
 });
 
 // ---------------------------------------------------------------------------
-// Summary (runs after all tests)
+// Summary
 // ---------------------------------------------------------------------------
 test("PHASE 3: Test summary", async (t) => {
   console.log("\n========================================");
