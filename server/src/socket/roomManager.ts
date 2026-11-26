@@ -117,14 +117,58 @@ export class RoomManager {
               },
               update: {
                 connectionStatus: "CONNECTED",
-                seatNumber: seat,
+                // Do NOT change seatNumber on update — a reconnecting player
+                // keeps their existing seat. Changing it could violate the
+                // unique (roomId, seatNumber) constraint if another player
+                // already occupies that seat.
               },
             });
           } catch (dbErr: any) {
-            console.error(
-              `Failed to persist RoomPlayer for user ${user.userId} in room ${code}:`,
-              dbErr?.message || dbErr
-            );
+            // If seatNumber conflicts (unique constraint), find an available seat
+            if (dbErr?.message?.includes("Unique constraint")) {
+              const takenDbSeats = new Set(
+                Array.from(playersMap.values()).map((p) => p.seatNumber)
+              );
+              let newSeat = 1;
+              while (takenDbSeats.has(newSeat) && newSeat <= room.maxPlayers) {
+                newSeat++;
+              }
+              if (newSeat <= room.maxPlayers) {
+                existingPlayer.seatNumber = newSeat;
+                playersMap.set(user.userId, existingPlayer);
+                try {
+                  await prisma.roomPlayer.upsert({
+                    where: {
+                      roomId_userId: { roomId: room.id, userId: user.userId },
+                    },
+                    create: {
+                      roomId: room.id,
+                      userId: user.userId,
+                      seatNumber: newSeat,
+                      isReady: existingPlayer.isReady,
+                      connectionStatus: "CONNECTED",
+                    },
+                    update: {
+                      connectionStatus: "CONNECTED",
+                    },
+                  });
+                } catch (dbErr2) {
+                  console.error(
+                    `Failed to persist RoomPlayer (retry) for user ${user.userId} in room ${code}:`,
+                    dbErr2?.message || dbErr2
+                  );
+                }
+              } else {
+                console.error(
+                  `Room ${code} is full — could not assign seat to user ${user.userId}`
+                );
+              }
+            } else {
+              console.error(
+                `Failed to persist RoomPlayer for user ${user.userId} in room ${code}:`,
+                dbErr?.message || dbErr
+              );
+            }
           }
         }
 
