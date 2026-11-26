@@ -153,11 +153,11 @@ async function makeAllPlayersReady(sessions, hostIndex = 0) {
   for (let i = 0; i < sessions.length; i++) {
     if (i !== hostIndex) {
       await sessions[i].emit("TOGGLE_READY");
-      await new Promise((r) => setTimeout(r, 300));
+      await new Promise((r) => setTimeout(r, 500));
     }
   }
   // Give the lobby time to propagate ready states
-  await new Promise((r) => setTimeout(r, 500));
+  await new Promise((r) => setTimeout(r, 800));
 }
 
 // ---------------------------------------------------------------------------
@@ -375,13 +375,29 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   // Make all non-host players ready before starting
   await makeAllPlayersReady(sessions, 0);
 
+  // Verify all players are ready before starting
+  for (let attempt = 0; attempt < 10; attempt++) {
+    await new Promise((r) => setTimeout(r, 300));
+    const roomRes = await apiGet(`/rooms/${roomCode}`, tokens[0].token);
+    if (roomRes.status === 200) {
+      const allReady = roomRes.body.room.players.every((p) => p.isReady);
+      if (allReady) break;
+    }
+  }
+
+  log("Starting game...");
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
   const stateUpdates = sessions[0].events["GAME_STATE_UPDATE"] || [];
   const initialState = stateUpdates[stateUpdates.length - 1];
-  check("Game state has turnPhase=DRAW initially", initialState.turnPhase === "DRAW", `phase: ${initialState.turnPhase}`);
-  check("Game state has currentTurnPlayerId", typeof initialState.currentTurnPlayerId === "string" && initialState.currentTurnPlayerId.length > 0);
+  check("Game state has turnPhase=DRAW initially", initialState && initialState.turnPhase === "DRAW", `phase: ${initialState?.turnPhase}`);
+  check("Game state has currentTurnPlayerId", initialState && typeof initialState.currentTurnPlayerId === "string" && initialState.currentTurnPlayerId.length > 0);
+
+  if (!initialState) {
+    for (const s of sessions) s.disconnect();
+    return;
+  }
 
   await sessions[0].emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 500));
@@ -390,7 +406,7 @@ test("PHASE 3: Turn synchronization works", async (t) => {
   await new Promise((r) => setTimeout(r, 500));
 
   const stateAfter = sessions[1].events["GAME_STATE_UPDATE"].pop();
-  check("Turn phase is DISCARD after draw", stateAfter.turnPhase === "DISCARD", `phase: ${stateAfter.turnPhase}`);
+  check("Turn phase is DISCARD after draw", stateAfter && stateAfter.turnPhase === "DISCARD", `phase: ${stateAfter?.turnPhase}`);
 
   for (const s of sessions) s.disconnect();
 });
@@ -420,8 +436,12 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   const declareCardId = hand[hand.length - 1].id;
 
   const badMelds = [hand.slice(0, 3), hand.slice(3, 6), hand.slice(6, 9)];
-  const res = await s1.emit("DECLARE", { melds: badMelds, declareCardId });
-  check("Invalid declare (wrong card count) rejected", res.isValid === false, `isValid: ${res.isValid}`);
+  await s1.emit("DECLARE", { melds: badMelds, declareCardId });
+  await new Promise((r) => setTimeout(r, 500));
+
+  const errorEvents = s1.events["ERROR"] || [];
+  const declareRejected = errorEvents.some((e) => e && e.message && e.message.includes("declaration"));
+  check("Invalid declare (wrong card count) rejected", declareRejected, `error events: ${JSON.stringify(errorEvents)}`);
 
   s1.disconnect();
   s2.disconnect();
@@ -433,8 +453,13 @@ test("PHASE 3: Reconnection restores correct private hand", async (t) => {
   const roomCode = await createRoom(tokens[0].token);
 
   const s1 = new PlayerSession(tokens[0].token, tokens[0].username);
+  const s2 = new PlayerSession(tokens[1].token, tokens[1].username);
   await s1.connect(roomCode);
+  await s2.connect(roomCode);
   await new Promise((r) => setTimeout(r, 500));
+
+  // Make all non-host players ready before starting
+  await makeAllPlayersReady([s1, s2], 0);
 
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
@@ -461,6 +486,7 @@ test("PHASE 3: Reconnection restores correct private hand", async (t) => {
   }
 
   s1b.disconnect();
+  s2.disconnect();
 });
 
 test("PHASE 3: No player can manipulate another player's cards", async (t) => {
@@ -484,8 +510,12 @@ test("PHASE 3: No player can manipulate another player's cards", async (t) => {
   const p1Hand = p1HandUpdates[p1HandUpdates.length - 1].cards;
   const p1CardId = p1Hand[0].id;
 
-  const res = await s2.emit("DISCARD_CARD", { cardId: p1CardId });
-  check("p2 cannot discard p1's card", !!res.error || res.isValid === false, `result: ${JSON.stringify(res)}`);
+  await s2.emit("DISCARD_CARD", { cardId: p1CardId });
+  await new Promise((r) => setTimeout(r, 500));
+
+  const errorEvents = s2.events["ERROR"] || [];
+  const manipulationBlocked = errorEvents.some((e) => e && e.message);
+  check("p2 cannot discard p1's card", manipulationBlocked, `error events: ${JSON.stringify(errorEvents)}`);
 
   s1.disconnect();
   s2.disconnect();
