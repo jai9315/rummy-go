@@ -82,23 +82,24 @@ export class RoomManager {
             seat++;
           }
 
-          const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
-          const profileImage =
-            dbUser?.profileImage || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`;
-
+          // Reserve the seat in memory IMMEDIATELY (before any async yield) so
+          // a concurrent JOIN_ROOM for another user cannot compute the same seat
+          // and violate the unique (roomId, seatNumber) constraint.
           existingPlayer = {
             userId: user.userId,
             username: user.username,
-            profileImage,
+            profileImage: "", // filled in below
             seatNumber: seat,
             isReady: user.userId === room.hostId, // Host is ready by default
             connectionStatus: "CONNECTED",
             socketId: socket.id,
             isHost: user.userId === room.hostId,
           };
-
-          // Synchronously store in memory so subsequent connections immediately see the occupied seat
           playersMap.set(user.userId, existingPlayer);
+
+          const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
+          existingPlayer.profileImage =
+            dbUser?.profileImage || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`;
 
           // Persist RoomPlayer to DB before broadcasting lobby.
           // If the DB write fails, we still proceed with the in-memory state
@@ -217,18 +218,31 @@ export class RoomManager {
     // Event: START_GAME (Host only)
     socket.on("START_GAME", async () => {
       const session = this.socketSessions.get(socket.id);
-      if (!session) return;
+      if (!session) {
+        console.error("START_GAME: no session for socket", socket.id);
+        return;
+      }
       const { roomCode, userId } = session;
+      console.log(`START_GAME: received from user ${userId} in room ${roomCode}`);
+
       const playersMap = this.lobbyPlayers.get(roomCode);
-      if (!playersMap) return;
+      if (!playersMap) {
+        console.error(`START_GAME: no players map for room ${roomCode}`);
+        return;
+      }
 
       const hostPlayer = playersMap.get(userId);
       if (!hostPlayer || !hostPlayer.isHost) {
+        console.error(`START_GAME: user ${userId} is not host in room ${roomCode}`);
         socket.emit("ERROR", { message: "Only the room host can start the game" });
         return;
       }
 
       const activePlayers = Array.from(playersMap.values());
+      console.log(
+        `START_GAME: ${activePlayers.length} players in room ${roomCode}, ready states:`,
+        activePlayers.map((p) => `${p.username}:${p.isReady}`).join(", ")
+      );
       if (activePlayers.length < 2) {
         socket.emit("ERROR", { message: "At least 2 players are required to start" });
         return;
@@ -237,6 +251,7 @@ export class RoomManager {
       // Check all players ready
       const notReady = activePlayers.find((p) => !p.isReady);
       if (notReady) {
+        console.error(`START_GAME: waiting for ${notReady.username} to get ready`);
         socket.emit("ERROR", { message: `Waiting for ${notReady.username} to get ready` });
         return;
       }
@@ -254,25 +269,51 @@ export class RoomManager {
           },
           onPrivateUpdate: (playerId, cards) => {
             const targetSocketId = this.userSockets.get(playerId);
-            if (targetSocketId) {
-              // Socket.IO v4: deliver via the socket object from the
-              // connected sockets map (io.sockets.sockets is a Map<id, Socket>).
-              const targetSocket = this.io.sockets.sockets.get(targetSocketId);
-              if (targetSocket) {
+            if (!targetSocketId) {
+              console.error(
+                `PRIVATE_HAND_UPDATE: no socket mapping for player ${playerId}`
+              );
+              return;
+            }
+
+            // Socket.IO v4: sockets no longer auto-join their own ID room,
+            // so io.to(socketId).emit() silently fails. Look up the socket
+            // object directly from the connected sockets map.
+            let targetSocket = this.io.sockets.sockets?.get(targetSocketId);
+            if (!targetSocket) {
+              // Fallback: try the explicit default namespace
+              targetSocket = this.io.of("/").sockets.get(targetSocketId);
+            }
+            if (!targetSocket) {
+              // Last resort: scan all connected sockets
+              for (const [sid, s] of this.io.sockets.sockets) {
+                if (sid === targetSocketId) {
+                  targetSocket = s;
+                  break;
+                }
+              }
+            }
+
+            if (targetSocket) {
+              try {
                 targetSocket.emit("PRIVATE_HAND_UPDATE", {
                   type: "PRIVATE_HAND_UPDATE",
                   playerId,
                   cards,
                   timestamp: Date.now(),
                 });
-              } else {
+                console.log(
+                  `PRIVATE_HAND_UPDATE delivered to player ${playerId} (${cards.length} cards)`
+                );
+              } catch (emitErr) {
                 console.error(
-                  `PRIVATE_HAND_UPDATE: socket not found for player ${playerId} (socketId: ${targetSocketId})`
+                  `PRIVATE_HAND_UPDATE: emit failed for player ${playerId}:`,
+                  emitErr
                 );
               }
             } else {
               console.error(
-                `PRIVATE_HAND_UPDATE: no socket mapping for player ${playerId}`
+                `PRIVATE_HAND_UPDATE: socket not found for player ${playerId} (socketId: ${targetSocketId}). Connected sockets: ${this.io.sockets.sockets.size}`
               );
             }
           },
@@ -302,9 +343,17 @@ export class RoomManager {
 
         // Only now register the game and start the round
         this.activeGames.set(roomCode, game);
-        console.log(`START_GAME: game ${game.id} started in room ${roomCode} with ${activePlayers.length} players`);
-        game.startRound();
-        console.log(`START_GAME: game ${game.id} status is now ${game.status}, turn: ${game.getCurrentTurnPlayerId()}`);
+        console.log(`START_GAME: game ${game.id} registered in room ${roomCode} with ${activePlayers.length} players`);
+        try {
+          game.startRound();
+          console.log(
+            `START_GAME: game ${game.id} startRound() complete, status=${game.status}, turn=${game.getCurrentTurnPlayerId()}`
+          );
+        } catch (roundErr) {
+          console.error(`START_GAME: game ${game.id} startRound() failed:`, roundErr);
+          this.activeGames.delete(roomCode);
+          throw roundErr;
+        }
       } catch (err: any) {
         console.error("START_GAME error:", err);
         socket.emit("ERROR", { message: err?.message || "Failed to start game" });
