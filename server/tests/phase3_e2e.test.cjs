@@ -127,15 +127,23 @@ class PlayerSession {
     });
   }
 
-  emit(event, data) {
+  emit(event, data, timeoutMs = 10000) {
     log(`${this.username}: emitting ${event}`);
-    // Fire-and-forget: server handlers don't send acknowledgements.
-    // We wait for resulting events (GAME_STATE_UPDATE, PRIVATE_HAND_UPDATE, etc.) instead.
-    if (!this.socket || !this.connected) {
-      return Promise.resolve({ error: "Socket not connected" });
-    }
-    this.socket.emit(event, data);
-    return Promise.resolve({ sent: true });
+    return new Promise((resolve) => {
+      if (!this.socket || !this.connected) {
+        resolve({ error: "Socket not connected" });
+        return;
+      }
+      const timeout = setTimeout(() => {
+        resolve({ error: `Socket emit timeout: ${event}` });
+      }, timeoutMs);
+
+      this.socket.emit(event, data, (resp) => {
+        clearTimeout(timeout);
+        log(`${this.username}: ${event} response: ${JSON.stringify(resp || {}).slice(0, 200)}`);
+        resolve(resp || {});
+      });
+    });
   }
 
   disconnect() {

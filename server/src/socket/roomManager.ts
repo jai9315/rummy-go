@@ -249,14 +249,14 @@ export class RoomManager {
         const game = new Game(`game_${roomCode}_${Date.now()}`, room.id, roomCode, {
           turnTimeLimitSeconds: 30,
           onStateUpdate: (state) => {
+            console.log(`START_GAME: onStateUpdate called, status=${state.status}, turn=${state.currentTurnPlayerId}`);
             this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", state);
           },
           onPrivateUpdate: (playerId, cards) => {
             const targetSocketId = this.userSockets.get(playerId);
             if (targetSocketId) {
-              // Socket.IO v4: sockets no longer auto-join their own ID room,
-              // so io.to(socketId).emit() does not deliver. Use the socket
-              // object directly from the connected sockets map.
+              // Socket.IO v4: deliver via the socket object from the
+              // connected sockets map (io.sockets.sockets is a Map<id, Socket>).
               const targetSocket = this.io.sockets.sockets.get(targetSocketId);
               if (targetSocket) {
                 targetSocket.emit("PRIVATE_HAND_UPDATE", {
@@ -265,7 +265,15 @@ export class RoomManager {
                   cards,
                   timestamp: Date.now(),
                 });
+              } else {
+                console.error(
+                  `PRIVATE_HAND_UPDATE: socket not found for player ${playerId} (socketId: ${targetSocketId})`
+                );
               }
+            } else {
+              console.error(
+                `PRIVATE_HAND_UPDATE: no socket mapping for player ${playerId}`
+              );
             }
           },
         });
