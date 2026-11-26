@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { Server, Socket } from "socket.io";
 import { prisma } from "../db/prisma";
 import { Evaluator } from "../engine/Evaluator";

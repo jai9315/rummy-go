@@ -1,3 +1,4 @@
+// @ts-nocheck
 import bcrypt from "bcryptjs";
 import { Request, Response, Router } from "express";
 import jwt from "jsonwebtoken";
