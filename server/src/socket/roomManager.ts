@@ -155,7 +155,7 @@ export class RoomManager {
                 } catch (dbErr2) {
                   console.error(
                     `Failed to persist RoomPlayer (retry) for user ${user.userId} in room ${code}:`,
-                    dbErr2?.message || dbErr2
+                    (dbErr2 as Error)?.message || dbErr2
                   );
                 }
               } else {
