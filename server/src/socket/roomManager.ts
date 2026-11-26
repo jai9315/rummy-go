@@ -254,12 +254,18 @@ export class RoomManager {
           onPrivateUpdate: (playerId, cards) => {
             const targetSocketId = this.userSockets.get(playerId);
             if (targetSocketId) {
-              this.io.to(targetSocketId).emit("PRIVATE_HAND_UPDATE", {
-                type: "PRIVATE_HAND_UPDATE",
-                playerId,
-                cards,
-                timestamp: Date.now(),
-              });
+              // Socket.IO v4: sockets no longer auto-join their own ID room,
+              // so io.to(socketId).emit() does not deliver. Use the socket
+              // object directly from the connected sockets map.
+              const targetSocket = this.io.sockets.sockets.get(targetSocketId);
+              if (targetSocket) {
+                targetSocket.emit("PRIVATE_HAND_UPDATE", {
+                  type: "PRIVATE_HAND_UPDATE",
+                  playerId,
+                  cards,
+                  timestamp: Date.now(),
+                });
+              }
             }
           },
         });
