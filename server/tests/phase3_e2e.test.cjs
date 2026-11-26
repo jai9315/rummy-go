@@ -83,7 +83,7 @@ function apiGet(path, token) {
 }
 
 // ---------------------------------------------------------------------------
-// Socket client wrapper
+// Socket client wrapper with emit timeout
 // ---------------------------------------------------------------------------
 class PlayerSession {
   constructor(token, username) {
@@ -127,14 +127,19 @@ class PlayerSession {
     });
   }
 
-  emit(event, data) {
+  emit(event, data, timeoutMs = 10000) {
     log(`${this.username}: emitting ${event}`);
     return new Promise((resolve) => {
       if (!this.socket || !this.connected) {
         resolve({ error: "Socket not connected" });
         return;
       }
+      const timeout = setTimeout(() => {
+        resolve({ error: `Socket emit timeout: ${event}` });
+      }, timeoutMs);
+
       this.socket.emit(event, data, (resp) => {
+        clearTimeout(timeout);
         log(`${this.username}: ${event} response: ${JSON.stringify(resp || {}).slice(0, 200)}`);
         resolve(resp || {});
       });
