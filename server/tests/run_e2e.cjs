@@ -101,7 +101,9 @@ async function main() {
 
   const cleanup = async () => {
     await stopProcess(serverProc);
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {}
   };
 
   let interrupted = false;

@@ -3,12 +3,13 @@
 import {
   LiveKitRoom,
   RoomAudioRenderer,
+  useConnectionState,
   useLocalParticipant,
   useParticipants,
   useSpeakingParticipants,
   useTracks,
 } from "@livekit/components-react";
-import { MediaDeviceFailure, Track } from "livekit-client";
+import { ConnectionState, MediaDeviceFailure, Track } from "livekit-client";
 import {
   Camera,
   CameraOff,
@@ -158,12 +159,15 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
     setActiveSpeakers,
   } = useVideoStore();
 
-  const { localParticipant } = useLocalParticipant();
+  const connectionState = useConnectionState();
+  const { localParticipant, cameraTrack } = useLocalParticipant();
   const participants = useParticipants();
   const speakingParticipants = useSpeakingParticipants();
   const trackReferences = useTracks([Track.Source.Camera, Track.Source.Microphone], {
     onlySubscribed: false,
   });
+
+  const isRoomConnected = connectionState === ConnectionState.Connected;
 
   // Sync active speaker identities into video store
   useEffect(() => {
@@ -171,31 +175,35 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
     setActiveSpeakers(speakerIds);
   }, [speakingParticipants, setActiveSpeakers]);
 
-  // Apply microphone toggle to local participant with permission error handling
+  // Apply microphone toggle once LiveKit room is connected (single media controller)
   useEffect(() => {
-    if (!localParticipant) return;
+    if (!localParticipant || !isRoomConnected) return;
     if (micPermissionDenied && !isMicMuted) return;
+    const shouldEnable = !isMicMuted;
+    if (localParticipant.isMicrophoneEnabled === shouldEnable) return;
 
-    localParticipant.setMicrophoneEnabled(!isMicMuted).catch((err: unknown) => {
+    localParticipant.setMicrophoneEnabled(shouldEnable).catch((err: unknown) => {
       console.warn("Microphone toggle failed:", err);
       if (isPermissionOrDeviceError(err)) {
         setMicPermissionDenied(true);
       }
     });
-  }, [localParticipant, isMicMuted, micPermissionDenied, setMicPermissionDenied]);
+  }, [localParticipant, isRoomConnected, isMicMuted, micPermissionDenied, setMicPermissionDenied]);
 
-  // Apply camera toggle to local participant; gracefully fall back to audio-only on denial
+  // Apply camera toggle once LiveKit room is connected; fall back to audio-only on denial
   useEffect(() => {
-    if (!localParticipant) return;
+    if (!localParticipant || !isRoomConnected) return;
     if (cameraPermissionDenied && !isCameraOff) return;
+    const shouldEnable = !isCameraOff;
+    if (localParticipant.isCameraEnabled === shouldEnable) return;
 
-    localParticipant.setCameraEnabled(!isCameraOff).catch((err: unknown) => {
+    localParticipant.setCameraEnabled(shouldEnable).catch((err: unknown) => {
       console.warn("Camera unavailable or denied, falling back to audio-only:", err);
       if (isPermissionOrDeviceError(err)) {
         setCameraPermissionDenied(true);
       }
     });
-  }, [localParticipant, isCameraOff, cameraPermissionDenied, setCameraPermissionDenied]);
+  }, [localParticipant, isRoomConnected, isCameraOff, cameraPermissionDenied, setCameraPermissionDenied]);
 
   const activeSpeakerSet = useMemo(() => new Set(activeSpeakers), [activeSpeakers]);
 
@@ -204,7 +212,8 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
   const otherPlayers = gameState.players.filter((p) => p.id !== user?.id);
   const selfPlayer = gameState.players.find((p) => p.id === user?.id);
 
-  const localCameraPub = localParticipant?.getTrackPublication(Track.Source.Camera);
+  const localCameraPub =
+    cameraTrack ?? localParticipant?.getTrackPublication(Track.Source.Camera);
   const localCameraTrack =
     !isCameraOff && !cameraPermissionDenied && localCameraPub && !localCameraPub.isMuted
       ? localCameraPub.track
@@ -216,7 +225,11 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
       <div className="flex items-center justify-between w-full max-w-5xl px-4 py-1.5 mb-2 bg-zinc-950/70 backdrop-blur-md rounded-2xl border border-zinc-800 shadow-md">
         <div className="flex items-center gap-2">
           <span className="text-xs font-bold text-zinc-300">Live Video Table</span>
-          {audioOnlyMode || cameraPermissionDenied ? (
+          {!isRoomConnected ? (
+            <span className="text-[10px] bg-zinc-800 text-zinc-300 font-semibold px-2 py-0.5 rounded-full border border-zinc-700">
+              Connecting...
+            </span>
+          ) : audioOnlyMode || cameraPermissionDenied ? (
             <span className="text-[10px] bg-amber-500/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full border border-amber-500/30">
               Audio Only
             </span>
@@ -383,6 +396,11 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
       .then((data) => {
         if (!mounted) return;
         if (data?.token && data?.serverUrl) {
+          if (data.serverUrl.includes("your-livekit-server.example.com")) {
+            setFallbackReason("Configure LIVEKIT_URL in .env");
+            setConnectionError("Placeholder LiveKit URL detected in .env");
+            return;
+          }
           setToken(data.token);
           setServerUrl(data.serverUrl);
           setVideoCredentials(data.token, data.serverUrl);
@@ -464,18 +482,17 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
     [setCameraPermissionDenied, setConnectionError]
   );
 
-  // If LiveKit token & serverUrl exist and connection hasn't failed, render LiveKitRoom
+  // If LiveKit token & serverUrl exist and connection hasn't failed, render LiveKitRoom.
+  // Pass video={false}/audio={false} so LiveKitConnectedGrid is the single media controller
+  // once ConnectionState.Connected is reached (avoids duplicate getUserMedia races).
   if (token && serverUrl && !fallbackReason) {
-    const enableVideo = !isCameraOff && !cameraPermissionDenied;
-    const enableAudio = !isMicMuted && !micPermissionDenied;
-
     return (
       <LiveKitRoom
         token={token}
         serverUrl={serverUrl}
         connect={true}
-        video={enableVideo}
-        audio={enableAudio}
+        video={false}
+        audio={false}
         onMediaDeviceFailure={handleMediaDeviceFailure}
         onError={handleLiveKitError}
         className="w-full flex justify-center"

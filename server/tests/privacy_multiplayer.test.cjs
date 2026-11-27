@@ -100,13 +100,16 @@ test("Real RoomManager + Socket.IO: 3-player card privacy, reconnect isolation, 
     }
     await new Promise((resolve) => io.close(() => resolve()));
     await new Promise((resolve) => httpServer.close(() => resolve()));
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await prisma.$disconnect();
 
     for (const [k, v] of Object.entries(prevEnv)) {
       if (v === undefined) delete process.env[k];
       else process.env[k] = v;
     }
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {}
   });
 
   // 1. Seed 3 real users & private room in isolated SQLite database

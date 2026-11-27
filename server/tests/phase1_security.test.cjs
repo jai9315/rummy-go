@@ -152,7 +152,9 @@ test("Phase 1: .env-only boot, DB integrity, auth select, friends include, LiveK
         }, 2000);
       });
     }
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {}
   });
 
   // Wait for server health endpoint
@@ -405,7 +407,9 @@ test("Phase 1: Strictly-typed SQLite prisma layer unit checks (create ID preserv
     } else {
       process.env.DATABASE_URL = prevDbUrl;
     }
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {}
   });
 
   // Create user + verify count() returns plain number

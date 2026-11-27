@@ -959,14 +959,20 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
     }
     const g = rm.getActiveGame("SHW202");
     if (g) g.stopTimer();
-    ioServer.close();
-    httpServer.close();
+    await new Promise((resolve) => ioServer.close(() => resolve()));
+    await new Promise((resolve) => httpServer.close(() => resolve()));
+    // Allow trailing async disconnect DB updates to settle before closing SQLite handle (Windows EPERM fix)
+    await new Promise((resolve) => setTimeout(resolve, 150));
     await prisma.$disconnect();
     if (prevDbUrl === undefined) delete process.env.DATABASE_URL;
     else process.env.DATABASE_URL = prevDbUrl;
     if (prevJwtSecret === undefined) delete process.env.JWT_SECRET;
     else process.env.JWT_SECRET = prevJwtSecret;
-    fs.rmSync(tempDir, { recursive: true, force: true });
+    try {
+      fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    } catch {
+      // Ignore transient OS temp-dir lock on Windows after DB handle release
+    }
   });
 
   const u1 = await prisma.user.create({ data: { username: "show_alice", isGuest: true } });
