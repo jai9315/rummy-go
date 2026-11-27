@@ -22,6 +22,12 @@ export const DeclareModal: React.FC<DeclareModalProps> = ({
   );
 
   useEffect(() => {
+    if (declareCardId) {
+      setSelectedDeclareCardId(declareCardId);
+    }
+  }, [declareCardId]);
+
+  useEffect(() => {
     if (gameState && gameState.status !== "PLAYING") {
       onClose();
     }

@@ -31,6 +31,11 @@ import { Card } from "@/components/game/Card";
 import { CardHand } from "@/components/game/CardHand";
 import { DeckPiles } from "@/components/game/DeckPiles";
 import { DeclareModal } from "@/components/game/DeclareModal";
+import {
+  isSameDropZone,
+  TableDragItem,
+  TableDropZone,
+} from "@/components/game/dragTypes";
 import { RotateDeviceOverlay } from "@/components/game/RotateDeviceOverlay";
 import { VideoErrorBoundary } from "@/components/video/VideoErrorBoundary";
 import { useLiveKitMedia, VideoOverlay } from "@/components/video/VideoOverlay";
@@ -40,7 +45,13 @@ import { soundEffects } from "@/lib/soundEffects";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useGameStore } from "@/store/useGameStore";
 import { useVideoStore } from "@/store/useVideoStore";
-import { Card as CardType, FeltTheme, MeldType, PlayerPublicInfo } from "@/types";
+import {
+  Card as CardType,
+  FeltTheme,
+  GameStatus,
+  MeldType,
+  PlayerPublicInfo,
+} from "@/types";
 
 interface TableProps {
   roomCode: string;
@@ -202,6 +213,11 @@ interface TableStageProps {
   turnProgress: number;
   displayedSeconds: number;
   isShowPhase: boolean;
+  isShuffling: boolean;
+  shuffleLabel: string;
+  shuffleNonce: number;
+  isDealingHand: boolean;
+  dealBatchKey: number;
   canSubmitOpponentMelds: boolean;
   liveDeadwoodPreview: number | null;
   winnerPlayer?: PlayerPublicInfo;
@@ -216,6 +232,77 @@ interface TableStageProps {
   onOpenChat: () => void;
 }
 
+interface TouchDragTracker {
+  item: TableDragItem;
+  startX: number;
+  startY: number;
+  active: boolean;
+}
+
+function resolvePointDropZone(
+  clientX: number,
+  clientY: number,
+  item: TableDragItem
+): TableDropZone | null {
+  const el = document.elementFromPoint(clientX, clientY);
+  if (!el) return null;
+
+  if (item.kind === "HAND_CARD") {
+    if (el.closest('[data-drop-zone="discard-pile"]')) {
+      return { zone: "discard-pile" };
+    }
+    if (el.closest('[data-drop-zone="declare-slot"]')) {
+      return { zone: "declare-slot" };
+    }
+  }
+
+  const newGroupNode = el.closest('[data-drop-zone="new-group"]');
+  if (newGroupNode) {
+    const gStr = newGroupNode.getAttribute("data-group-index");
+    if (gStr !== null) {
+      const gIdx = parseInt(gStr, 10);
+      if (!Number.isNaN(gIdx)) {
+        return { zone: "new-group", groupIndex: gIdx };
+      }
+    }
+  }
+
+  if (item.kind === "HAND_CARD") {
+    const cardNode = el.closest("[data-card-index]");
+    if (cardNode) {
+      const gStr = cardNode.getAttribute("data-group-index");
+      const cStr = cardNode.getAttribute("data-card-index");
+      if (gStr !== null && cStr !== null) {
+        const gIdx = parseInt(gStr, 10);
+        const cIdx = parseInt(cStr, 10);
+        if (!Number.isNaN(gIdx) && !Number.isNaN(cIdx)) {
+          return { zone: "meld-group", groupIndex: gIdx, cardIndex: cIdx };
+        }
+      }
+    }
+  }
+
+  const groupNode = el.closest('[data-drop-zone="meld-group"]');
+  if (groupNode) {
+    const gStr = groupNode.getAttribute("data-group-index");
+    if (gStr !== null) {
+      const gIdx = parseInt(gStr, 10);
+      if (!Number.isNaN(gIdx)) {
+        return { zone: "meld-group", groupIndex: gIdx };
+      }
+    }
+  }
+
+  if (
+    (item.kind === "DRAW_CLOSED" || item.kind === "DRAW_OPEN") &&
+    el.closest('[data-drop-zone="hand-tray"]')
+  ) {
+    return { zone: "hand-tray" };
+  }
+
+  return null;
+}
+
 /**
  * Inner Royal 13 Table Stage rendered inside <VideoOverlay> so perimeter opponent
  * video tiles, bottom-left local video tile, and spotlight modal all read live
@@ -225,6 +312,11 @@ const TableStage: React.FC<TableStageProps> = ({
   turnProgress,
   displayedSeconds,
   isShowPhase,
+  isShuffling,
+  shuffleLabel,
+  shuffleNonce,
+  isDealingHand,
+  dealBatchKey,
   canSubmitOpponentMelds,
   liveDeadwoodPreview,
   winnerPlayer,
@@ -244,6 +336,10 @@ const TableStage: React.FC<TableStageProps> = ({
     handGroups,
     unreadChatCount,
     activeReactions,
+    clearSelection,
+    moveCard,
+    setPendingDrawTargetGroup,
+    setError,
     setShowDeclareModal,
   } = useGameStore();
   const {
@@ -263,6 +359,210 @@ const TableStage: React.FC<TableStageProps> = ({
   const { getPlayerMedia } = useLiveKitMedia();
 
   const currentUserId = user?.id ?? "";
+  const isPlaying = gameState?.status === "PLAYING";
+  const isMyTurn = isPlaying && gameState?.currentTurnPlayerId === currentUserId;
+  const isDrawPhase = isMyTurn && gameState?.turnPhase === "DRAW";
+  const isDiscardPhase = isMyTurn && gameState?.turnPhase === "DISCARD";
+
+  // Unified Table-Wide Drag-and-Drop State (Desktop HTML5 + Mobile Touch)
+  const [activeDrag, setActiveDrag] = useState<TableDragItem | null>(null);
+  const [hoveredZone, setHoveredZone] = useState<TableDropZone | null>(null);
+  const [touchGhost, setTouchGhost] = useState<{ x: number; y: number } | null>(
+    null
+  );
+
+  const touchTrackerRef = useRef<TouchDragTracker | null>(null);
+  const hoveredZoneRef = useRef<TableDropZone | null>(null);
+  const suppressClickUntilRef = useRef<number>(0);
+  const dragToastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const showTransientHint = useCallback(
+    (msg: string) => {
+      setError(msg);
+      if (dragToastTimerRef.current) {
+        clearTimeout(dragToastTimerRef.current);
+      }
+      dragToastTimerRef.current = setTimeout(() => {
+        setError(null);
+      }, 3200);
+    },
+    [setError]
+  );
+
+  const handleStartDrag = useCallback((item: TableDragItem) => {
+    setActiveDrag(item);
+  }, []);
+
+  const handleHoverZone = useCallback((zone: TableDropZone | null) => {
+    setHoveredZone((prev) => {
+      if (isSameDropZone(prev, zone)) return prev;
+      hoveredZoneRef.current = zone;
+      return zone;
+    });
+  }, []);
+
+  const handleEndDrag = useCallback(() => {
+    touchTrackerRef.current = null;
+    hoveredZoneRef.current = null;
+    setActiveDrag(null);
+    setHoveredZone(null);
+    setTouchGhost(null);
+  }, []);
+
+  const shouldSuppressClick = useCallback(() => {
+    return Date.now() < suppressClickUntilRef.current;
+  }, []);
+
+  const handleDropOnZone = useCallback(
+    (item: TableDragItem, zone: TableDropZone) => {
+      if (item.kind === "HAND_CARD") {
+        if (zone.zone === "discard-pile") {
+          if (isDiscardPhase) {
+            onDiscardWithSound(item.cardId);
+            clearSelection();
+          } else {
+            showTransientHint(
+              "Draw a card on your turn before discarding to the Open Pile."
+            );
+          }
+          return;
+        }
+
+        if (zone.zone === "declare-slot") {
+          if (isDiscardPhase) {
+            setShowDeclareModal(true, item.cardId);
+          } else {
+            showTransientHint(
+              "You can only declare during your Discard phase (with 14 cards)."
+            );
+          }
+          return;
+        }
+
+        if (zone.zone === "meld-group") {
+          moveCard(item.cardId, zone.groupIndex, zone.cardIndex);
+          return;
+        }
+
+        if (zone.zone === "new-group") {
+          moveCard(item.cardId, zone.groupIndex);
+          return;
+        }
+        return;
+      }
+
+      if (item.kind === "DRAW_CLOSED" || item.kind === "DRAW_OPEN") {
+        if (
+          zone.zone === "hand-tray" ||
+          zone.zone === "meld-group" ||
+          zone.zone === "new-group"
+        ) {
+          if (!isDrawPhase) {
+            showTransientHint("Wait for your Draw phase to draw a card.");
+            return;
+          }
+          if (zone.zone === "meld-group" || zone.zone === "new-group") {
+            setPendingDrawTargetGroup(zone.groupIndex);
+          } else {
+            setPendingDrawTargetGroup(null);
+          }
+          onDrawWithSound(item.kind === "DRAW_CLOSED" ? "CLOSED" : "DISCARD");
+        }
+      }
+    },
+    [
+      isDiscardPhase,
+      isDrawPhase,
+      onDiscardWithSound,
+      onDrawWithSound,
+      clearSelection,
+      moveCard,
+      setPendingDrawTargetGroup,
+      setShowDeclareModal,
+      showTransientHint,
+    ]
+  );
+
+  // Start a touch drag candidate (activates after 12px finger movement so taps keep working)
+  const handleTouchDragStart = useCallback(
+    (e: React.TouchEvent, item: TableDragItem) => {
+      const touch = e.touches[0];
+      if (!touch) return;
+      touchTrackerRef.current = {
+        item,
+        startX: touch.clientX,
+        startY: touch.clientY,
+        active: false,
+      };
+    },
+    []
+  );
+
+  // Global touch-drag tracker + safety cleanup (dragend / blur) so ghosts never stick
+  useEffect(() => {
+    const onWindowTouchMove = (e: TouchEvent) => {
+      const tracker = touchTrackerRef.current;
+      const touch = e.touches[0];
+      if (!tracker || !touch) return;
+
+      const dx = touch.clientX - tracker.startX;
+      const dy = touch.clientY - tracker.startY;
+
+      if (!tracker.active) {
+        if (Math.hypot(dx, dy) < 12) return;
+        tracker.active = true;
+        setActiveDrag(tracker.item);
+      }
+
+      // Prevent browser scroll/overscroll while actively dragging across the table
+      if (e.cancelable) {
+        e.preventDefault();
+      }
+
+      setTouchGhost({ x: touch.clientX, y: touch.clientY });
+      const resolved = resolvePointDropZone(
+        touch.clientX,
+        touch.clientY,
+        tracker.item
+      );
+      handleHoverZone(resolved);
+    };
+
+    const finishTouchDrag = (commitDrop: boolean) => {
+      const tracker = touchTrackerRef.current;
+      if (!tracker) return;
+
+      if (tracker.active) {
+        suppressClickUntilRef.current = Date.now() + 260;
+        const zone = hoveredZoneRef.current;
+        if (commitDrop && zone) {
+          handleDropOnZone(tracker.item, zone);
+        }
+      }
+      handleEndDrag();
+    };
+
+    const onWindowTouchEnd = () => finishTouchDrag(true);
+    const onWindowTouchCancel = () => finishTouchDrag(false);
+    const onWindowCleanup = () => handleEndDrag();
+
+    window.addEventListener("touchmove", onWindowTouchMove, { passive: false });
+    window.addEventListener("touchend", onWindowTouchEnd);
+    window.addEventListener("touchcancel", onWindowTouchCancel);
+    window.addEventListener("dragend", onWindowCleanup);
+    window.addEventListener("blur", onWindowCleanup);
+
+    return () => {
+      window.removeEventListener("touchmove", onWindowTouchMove);
+      window.removeEventListener("touchend", onWindowTouchEnd);
+      window.removeEventListener("touchcancel", onWindowTouchCancel);
+      window.removeEventListener("dragend", onWindowCleanup);
+      window.removeEventListener("blur", onWindowCleanup);
+      if (dragToastTimerRef.current) {
+        clearTimeout(dragToastTimerRef.current);
+      }
+    };
+  }, [handleDropOnZone, handleEndDrag, handleHoverZone]);
 
   // Sort players by seatNumber and rotate so opponents sit clockwise after local player
   const { selfPlayer, seatedOpponents } = useMemo(() => {
@@ -303,6 +603,49 @@ const TableStage: React.FC<TableStageProps> = ({
 
   return (
     <>
+      {/* Floating Touch-Drag Ghost Preview (strictly pointer-events-none so elementFromPoint hits drop zones) */}
+      {touchGhost && activeDrag && (
+        <div
+          style={{
+            left: touchGhost.x,
+            top: touchGhost.y - 44,
+          }}
+          className="fixed z-[60] -translate-x-1/2 -translate-y-1/2 pointer-events-none flex flex-col items-center gap-1"
+        >
+          {activeDrag.kind === "DRAW_CLOSED" ? (
+            <Card faceDown size="sm" disabled className="shadow-2xl scale-105" />
+          ) : activeDrag.card ? (
+            <Card
+              card={activeDrag.card}
+              size="sm"
+              disabled
+              className="shadow-2xl ring-2 ring-[#f6e09e] scale-105"
+            />
+          ) : null}
+          <span
+            className={`px-2 py-0.5 rounded-full text-[9px] font-black uppercase tracking-wider shadow-lg whitespace-nowrap ${
+              hoveredZone?.zone === "discard-pile"
+                ? "bg-amber-400 text-slate-950"
+                : hoveredZone?.zone === "declare-slot"
+                ? "bg-emerald-400 text-slate-950"
+                : activeDrag.kind !== "HAND_CARD"
+                ? "bg-emerald-400 text-slate-950"
+                : "bg-[#f6e09e] text-slate-950"
+            }`}
+          >
+            {hoveredZone?.zone === "discard-pile"
+              ? "Drop to Discard"
+              : hoveredZone?.zone === "declare-slot"
+              ? "Drop to Declare"
+              : activeDrag.kind === "DRAW_CLOSED"
+              ? "Draw Closed Deck"
+              : activeDrag.kind === "DRAW_OPEN"
+              ? "Draw Open Card"
+              : "Moving Card"}
+          </span>
+        </div>
+      )}
+
       {/* BAND 2: ROYAL 13 OVAL TABLE ARENA + PERIMETER OPPONENT VIDEO SEATS */}
       <main className="flex-1 min-h-0 relative w-full max-w-[1440px] mx-auto flex items-center justify-center px-3 sm:px-8 lg:px-14 py-2 sm:py-3 mobile-landscape:px-2 mobile-landscape:py-1 overflow-hidden">
         {/* Opponent Video Tiles Positioned Dynamically Around the Oval Table */}
@@ -457,8 +800,19 @@ const TableStage: React.FC<TableStageProps> = ({
                 </div>
               ) : (
                 <DeckPiles
+                  isShuffling={isShuffling}
+                  shuffleLabel={shuffleLabel}
+                  shuffleNonce={shuffleNonce}
+                  activeDrag={activeDrag}
+                  hoveredZone={hoveredZone}
+                  shouldSuppressClick={shouldSuppressClick}
                   onDraw={onDrawWithSound}
                   onOpenDeclare={() => setShowDeclareModal(true, null)}
+                  onStartDrag={handleStartDrag}
+                  onEndDrag={handleEndDrag}
+                  onHoverZone={handleHoverZone}
+                  onDropOnZone={handleDropOnZone}
+                  onTouchDragStart={handleTouchDragStart}
                 />
               )}
             </div>
@@ -490,10 +844,20 @@ const TableStage: React.FC<TableStageProps> = ({
         {/* Bottom-Center: Compact Action Toolbar + Glassmorphic 13-Card Hand Tray */}
         <div className="flex-1 min-w-0">
           <CardHand
+            activeDrag={activeDrag}
+            hoveredZone={hoveredZone}
+            isDealingHand={isDealingHand}
+            dealBatchKey={dealBatchKey}
+            shouldSuppressClick={shouldSuppressClick}
             onDiscard={onDiscardWithSound}
             onDeclare={() => {}}
             onDrop={onDrop}
             onSort={onSort}
+            onStartDrag={handleStartDrag}
+            onEndDrag={handleEndDrag}
+            onHoverZone={handleHoverZone}
+            onDropOnZone={handleDropOnZone}
+            onTouchDragStart={handleTouchDragStart}
           />
         </div>
 
@@ -707,6 +1071,7 @@ export const Table: React.FC<TableProps> = ({
   const user = useAuthStore((s) => s.user);
   const {
     gameState,
+    privateHand,
     handGroups,
     lobbyPlayers,
     showDeclareModal,
@@ -734,9 +1099,121 @@ export const Table: React.FC<TableProps> = ({
   const [chatDraft, setChatDraft] = useState("");
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
 
+  // Riffle Shuffle & Staggered 13-Card Deal-In Animation State
+  const [isShuffling, setIsShuffling] = useState(false);
+  const [shuffleLabel, setShuffleLabel] = useState("Shuffling & dealing...");
+  const [shuffleNonce, setShuffleNonce] = useState(0);
+  const [isDealingHand, setIsDealingHand] = useState(false);
+  const [dealBatchKey, setDealBatchKey] = useState(0);
+
   const prevTurnPlayerRef = useRef<string | null>(null);
   const celebratedKeyRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
+  const prevStatusRef = useRef<GameStatus | null>(null);
+  const prevRoundRef = useRef<number | null>(null);
+  const prevClosedDeckCountRef = useRef<number | null>(null);
+  const pendingDealAnimationRef = useRef<boolean>(false);
+  const shuffleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const triggerRiffleShuffle = useCallback(
+    (label: string, withHandDeal: boolean) => {
+      setShuffleLabel(label);
+      setShuffleNonce((n) => n + 1);
+      setIsShuffling(true);
+      soundEffects.playCardShuffle(isMuted);
+
+      if (shuffleTimeoutRef.current) {
+        clearTimeout(shuffleTimeoutRef.current);
+      }
+      shuffleTimeoutRef.current = setTimeout(() => {
+        setIsShuffling(false);
+      }, 1080);
+
+      if (withHandDeal) {
+        pendingDealAnimationRef.current = true;
+      }
+    },
+    [isMuted]
+  );
+
+  // Detect: (1) TOSS -> PLAYING, (2) NEXT_ROUND / new round start, (3) discard-pile reshuffle
+  useEffect(() => {
+    if (!gameState) return;
+    const prevStatus = prevStatusRef.current;
+    const prevRound = prevRoundRef.current;
+    const prevClosed = prevClosedDeckCountRef.current;
+
+    const currStatus = gameState.status;
+    const currRound = gameState.roundNumber ?? 1;
+    const currClosed = gameState.closedDeckCount;
+
+    const isTossFinished =
+      prevStatus === "TOSS" &&
+      (currStatus === "PLAYING" || currStatus === "DEALING");
+    const isNewRoundStarted =
+      (currStatus === "PLAYING" || currStatus === "DEALING") &&
+      ((prevRound !== null && currRound > prevRound) ||
+        (prevStatus === null && currStatus === "PLAYING") ||
+        (prevStatus === "ROUND_END" && currStatus === "PLAYING"));
+    const isDiscardReshuffled =
+      prevStatus === "PLAYING" &&
+      currStatus === "PLAYING" &&
+      prevRound === currRound &&
+      prevClosed !== null &&
+      currClosed > prevClosed;
+
+    if (isTossFinished) {
+      triggerRiffleShuffle("Shuffling & dealing...", true);
+    } else if (isNewRoundStarted) {
+      triggerRiffleShuffle(
+        currRound > 1
+          ? `Shuffling Round ${currRound}...`
+          : "Shuffling & dealing...",
+        true
+      );
+    } else if (isDiscardReshuffled) {
+      triggerRiffleShuffle("Reshuffling discard pile...", false);
+    }
+
+    prevStatusRef.current = currStatus;
+    prevRoundRef.current = currRound;
+    prevClosedDeckCountRef.current = currClosed;
+  }, [
+    gameState?.status,
+    gameState?.roundNumber,
+    gameState?.closedDeckCount,
+    triggerRiffleShuffle,
+  ]);
+
+  // Trigger staggered 13-card deal-in animation as soon as the fresh round hand arrives
+  useEffect(() => {
+    if (
+      !pendingDealAnimationRef.current ||
+      gameState?.status !== "PLAYING" ||
+      privateHand.length < 13
+    ) {
+      return;
+    }
+
+    pendingDealAnimationRef.current = false;
+    setDealBatchKey((k) => k + 1);
+    setIsDealingHand(true);
+
+    if (dealTimeoutRef.current) {
+      clearTimeout(dealTimeoutRef.current);
+    }
+    dealTimeoutRef.current = setTimeout(() => {
+      setIsDealingHand(false);
+    }, 1150);
+  }, [gameState?.status, privateHand.length, shuffleNonce]);
+
+  useEffect(() => {
+    return () => {
+      if (shuffleTimeoutRef.current) clearTimeout(shuffleTimeoutRef.current);
+      if (dealTimeoutRef.current) clearTimeout(dealTimeoutRef.current);
+    };
+  }, []);
 
   const handleDrawWithSound = useCallback(
     (source: "CLOSED" | "DISCARD") => {
@@ -927,6 +1404,11 @@ export const Table: React.FC<TableProps> = ({
       turnProgress={turnProgress}
       displayedSeconds={displayedSeconds}
       isShowPhase={isShowPhase}
+      isShuffling={isShuffling}
+      shuffleLabel={shuffleLabel}
+      shuffleNonce={shuffleNonce}
+      isDealingHand={isDealingHand}
+      dealBatchKey={dealBatchKey}
       canSubmitOpponentMelds={canSubmitOpponentMelds}
       liveDeadwoodPreview={liveDeadwoodPreview}
       winnerPlayer={winnerPlayer}

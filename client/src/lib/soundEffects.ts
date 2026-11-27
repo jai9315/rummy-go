@@ -61,6 +61,48 @@ function playTone(
   }
 }
 
+function playNoiseFlutter(
+  delaySec: number,
+  durationSec: number,
+  filterFreq: number,
+  gainPeak: number
+): void {
+  const ctx = getAudioContext();
+  if (!ctx) return;
+
+  try {
+    const sampleCount = Math.max(1, Math.floor(ctx.sampleRate * durationSec));
+    const buffer = ctx.createBuffer(1, sampleCount, ctx.sampleRate);
+    const data = buffer.getChannelData(0);
+    for (let i = 0; i < sampleCount; i++) {
+      data[i] = (Math.random() * 2 - 1) * 0.85;
+    }
+
+    const start = ctx.currentTime + delaySec;
+    const src = ctx.createBufferSource();
+    src.buffer = buffer;
+
+    const filter = ctx.createBiquadFilter();
+    filter.type = "bandpass";
+    filter.frequency.setValueAtTime(filterFreq, start);
+    filter.Q.setValueAtTime(2.2, start);
+
+    const gain = ctx.createGain();
+    gain.gain.setValueAtTime(0.0001, start);
+    gain.gain.exponentialRampToValueAtTime(gainPeak, start + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, start + durationSec);
+
+    src.connect(filter);
+    filter.connect(gain);
+    gain.connect(ctx.destination);
+
+    src.start(start);
+    src.stop(start + durationSec + 0.01);
+  } catch {
+    // Ignore autoplay/browser audio restrictions
+  }
+}
+
 export const soundEffects = {
   playCardDraw(muted: boolean): void {
     if (muted) return;
@@ -71,6 +113,21 @@ export const soundEffects = {
   playCardDiscard(muted: boolean): void {
     if (muted) return;
     playTone(340, 0.08, "triangle", 0.07, 0);
+  },
+
+  /**
+   * Subtle riffle-shuffle flutter cue (~0.65s across 10 rapid card-snap bursts).
+   */
+  playCardShuffle(muted: boolean): void {
+    if (muted) return;
+    const bursts = 10;
+    for (let i = 0; i < bursts; i++) {
+      const delay = 0.08 + i * 0.052;
+      const freq = 1400 + (i % 4) * 260;
+      playNoiseFlutter(delay, 0.036, freq, 0.055);
+    }
+    // Crisp bridge/square-up finish thud
+    playNoiseFlutter(0.68, 0.06, 900, 0.06);
   },
 
   playTurnAlert(muted: boolean): void {

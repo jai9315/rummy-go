@@ -4,13 +4,31 @@ import { AnimatePresence, motion } from "framer-motion";
 import { Award, Crown, Sparkles } from "lucide-react";
 import React, { useState } from "react";
 import { Card } from "@/components/game/Card";
+import {
+  parseDragDataTransfer,
+  RUMMY_DRAG_MIME,
+  serializeDragItem,
+  TableDragItem,
+  TableDropZone,
+} from "@/components/game/dragTypes";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useGameStore } from "@/store/useGameStore";
 import { Suit } from "@/types";
 
 interface DeckPilesProps {
+  isShuffling: boolean;
+  shuffleLabel: string;
+  shuffleNonce: number;
+  activeDrag: TableDragItem | null;
+  hoveredZone: TableDropZone | null;
+  shouldSuppressClick: () => boolean;
   onDraw: (source: "CLOSED" | "DISCARD") => void;
   onOpenDeclare: () => void;
+  onStartDrag: (item: TableDragItem) => void;
+  onEndDrag: () => void;
+  onHoverZone: (zone: TableDropZone | null) => void;
+  onDropOnZone: (item: TableDragItem, zone: TableDropZone) => void;
+  onTouchDragStart: (e: React.TouchEvent, item: TableDragItem) => void;
 }
 
 const SUIT_GLYPH: Record<Suit, { symbol: string; color: string }> = {
@@ -21,9 +39,102 @@ const SUIT_GLYPH: Record<Suit, { symbol: string; color: string }> = {
   JOKER: { symbol: "★", color: "text-amber-300" },
 };
 
+const RIFFLE_CARDS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9] as const;
+
+/**
+ * Crisp Framer Motion Riffle Shuffle animation (~1.05s):
+ * Splits 10 ornate .card-back cards into left & right halves, rapidly
+ * interleaves them back together with staggered arch motion, and squares up
+ * with a golden shimmer ring.
+ */
+const RiffleShuffleOverlay: React.FC<{
+  label: string;
+  shuffleNonce: number;
+}> = ({ label, shuffleNonce }) => {
+  return (
+    <motion.div
+      key={`shuffle-${shuffleNonce}`}
+      initial={{ opacity: 0, scale: 0.92 }}
+      animate={{ opacity: 1, scale: 1 }}
+      exit={{ opacity: 0, scale: 0.92 }}
+      transition={{ duration: 0.16 }}
+      className="pointer-events-none absolute inset-0 z-30 flex flex-col items-center justify-center bg-slate-950/30 backdrop-blur-[1.5px] rounded-[inherit]"
+    >
+      <div className="relative w-44 h-28 sm:w-56 sm:h-32 mobile-landscape:w-36 mobile-landscape:h-20 flex items-center justify-center">
+        {/* Golden aura pulse on final square-up */}
+        <motion.div
+          initial={{ opacity: 0, scale: 0.7 }}
+          animate={{ opacity: [0, 0.25, 0.75, 0], scale: [0.7, 1.08, 1.18, 1.3] }}
+          transition={{ duration: 1.05, times: [0, 0.35, 0.78, 1] }}
+          className="absolute w-20 h-28 sm:w-24 sm:h-32 mobile-landscape:w-14 mobile-landscape:h-20 rounded-xl border-2 border-[#f6e09e] shadow-[0_0_28px_rgba(246,224,158,0.65)]"
+        />
+
+        {RIFFLE_CARDS.map((idx) => {
+          const isLeftHalf = idx % 2 === 0;
+          const halfIndex = Math.floor(idx / 2); // 0..4 within each half
+          const splitX = isLeftHalf ? -46 - halfIndex * 1.5 : 46 + halfIndex * 1.5;
+          const splitRot = isLeftHalf ? -10 - halfIndex : 10 + halfIndex;
+          const archY = -14 - halfIndex * 2;
+          const interleaveDelay = idx * 0.032;
+
+          return (
+            <motion.div
+              key={idx}
+              style={{ zIndex: 10 + idx }}
+              initial={{ x: 0, y: -halfIndex * 1.2, rotate: 0, scale: 1 }}
+              animate={{
+                x: [0, splitX, splitX * 0.65, 0, 0],
+                y: [
+                  -halfIndex * 1.2,
+                  -halfIndex * 1.5,
+                  archY,
+                  -idx * 0.6,
+                  -idx * 0.4,
+                ],
+                rotate: [0, splitRot, splitRot * 0.35, 0, 0],
+                scale: [1, 0.98, 1.04, 1, 1],
+              }}
+              transition={{
+                duration: 0.78,
+                delay: interleaveDelay,
+                times: [0, 0.28, 0.56, 0.84, 1],
+                ease: [0.22, 1, 0.36, 1],
+              }}
+              className="card-back absolute w-14 h-20 sm:w-[68px] sm:h-[98px] mobile-landscape:w-12 mobile-landscape:h-[68px] rounded-lg flex items-center justify-center shadow-xl"
+            >
+              <span className="text-amber-300/90 text-xs sm:text-sm leading-none">
+                ★
+              </span>
+            </motion.div>
+          );
+        })}
+      </div>
+
+      <motion.div
+        initial={{ opacity: 0, y: 6 }}
+        animate={{ opacity: 1, y: 0 }}
+        className="mt-1 glass-pill px-3 py-1 rounded-full border border-[#f6e09e]/50 text-[#f6e09e] text-[10px] sm:text-xs mobile-landscape:text-[9px] font-bold tracking-wide shadow-lg"
+      >
+        {label}
+      </motion.div>
+    </motion.div>
+  );
+};
+
 export const DeckPiles: React.FC<DeckPilesProps> = ({
+  isShuffling,
+  shuffleLabel,
+  shuffleNonce,
+  activeDrag,
+  hoveredZone,
+  shouldSuppressClick,
   onDraw,
   onOpenDeclare,
+  onStartDrag,
+  onEndDrag,
+  onHoverZone,
+  onDropOnZone,
+  onTouchDragStart,
 }) => {
   const user = useAuthStore((s) => s.user);
   const gameState = useGameStore((s) => s.gameState);
@@ -36,6 +147,13 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
   const isMyTurn = isPlaying && gameState.currentTurnPlayerId === user?.id;
   const isDrawPhase = isMyTurn && gameState.turnPhase === "DRAW";
   const isDiscardPhase = isMyTurn && gameState.turnPhase === "DISCARD";
+
+  const isDraggingHandCard = activeDrag?.kind === "HAND_CARD";
+  const isDiscardZoneActive = isDraggingHandCard && isDiscardPhase;
+  const isDiscardZoneHovered =
+    isDraggingHandCard && hoveredZone?.zone === "discard-pile";
+  const isDeclareZoneHovered =
+    isDraggingHandCard && hoveredZone?.zone === "declare-slot";
 
   const activePlayer = gameState.players.find(
     (p) => p.id === gameState.currentTurnPlayerId
@@ -51,7 +169,11 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
   const recentDiscards = (gameState.recentDiscards ?? []).slice(-5).reverse();
 
   // TOSS CARD-REVEAL OVERLAY ON CENTER FELT
-  if (isTossPhase && gameState.tossResults && gameState.tossResults.length > 0) {
+  if (
+    isTossPhase &&
+    gameState.tossResults &&
+    gameState.tossResults.length > 0
+  ) {
     const tossWinner = gameState.tossResults[0];
     return (
       <div className="flex flex-col items-center justify-center gap-2 sm:gap-3 mobile-landscape:gap-1.5 z-20 px-2 max-w-full">
@@ -109,7 +231,17 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
   }
 
   return (
-    <div className="flex flex-col items-center justify-center gap-2 sm:gap-2.5 mobile-landscape:gap-1 z-20 max-w-full">
+    <div className="relative flex flex-col items-center justify-center gap-2 sm:gap-2.5 mobile-landscape:gap-1 z-20 max-w-full w-full h-full">
+      {/* Riffle Shuffle Overlay (plays after TOSS, on NEXT_ROUND, & on discard-pile reshuffle) */}
+      <AnimatePresence>
+        {isShuffling && (
+          <RiffleShuffleOverlay
+            label={shuffleLabel}
+            shuffleNonce={shuffleNonce}
+          />
+        )}
+      </AnimatePresence>
+
       {/* Top Center Glass Table Info Pill */}
       <div className="glass-pill px-3 py-1 mobile-landscape:px-2.5 mobile-landscape:py-0.5 rounded-full flex items-center gap-2 text-[10px] sm:text-[11px] mobile-landscape:text-[9px] text-slate-200 font-medium shadow">
         <span className="font-semibold text-amber-200">
@@ -132,7 +264,7 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
 
       {/* 3-Column Center Felt: Closed Deck (+ Wild Joker) | Open Discard Pile | Finish / Declare Slot */}
       <div className="flex items-center justify-center gap-6 sm:gap-10 lg:gap-12 mobile-landscape:gap-5 px-4 sm:px-6 mobile-landscape:px-3 py-1.5 sm:py-2 mobile-landscape:py-1">
-        {/* COLUMN 1: CLOSED DECK + PEEKING -rotate-90 WILDCARD JOKER */}
+        {/* COLUMN 1: CLOSED DECK (Click OR Drag to Hand Tray in DRAW phase) */}
         <div className="relative flex flex-col items-center group pl-5 sm:pl-7 mobile-landscape:pl-4">
           {/* Wildcard Joker peeking sideways (-rotate-90) underneath Closed Deck */}
           {gameState.wildJoker && (
@@ -149,22 +281,53 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             <div className="absolute -top-1 -left-1 w-full h-full rounded-lg card-back opacity-50 pointer-events-none" />
             <div className="absolute -top-0.5 -left-0.5 w-full h-full rounded-lg card-back opacity-75 pointer-events-none" />
 
-            <motion.div
-              whileHover={isDrawPhase ? { scale: 1.04 } : undefined}
-              whileTap={isDrawPhase ? { scale: 0.95 } : undefined}
-              onClick={() => isDrawPhase && onDraw("CLOSED")}
-              className={`relative rounded-lg ${
+            <div
+              draggable={isDrawPhase}
+              onDragStart={(e) => {
+                if (!isDrawPhase) {
+                  e.preventDefault();
+                  return;
+                }
+                const dragItem: TableDragItem = { kind: "DRAW_CLOSED" };
+                e.dataTransfer.effectAllowed = "copy";
+                e.dataTransfer.setData(
+                  RUMMY_DRAG_MIME,
+                  serializeDragItem(dragItem)
+                );
+                e.dataTransfer.setData("text/plain", "DRAW_CLOSED");
+                onStartDrag(dragItem);
+              }}
+              onDragEnd={onEndDrag}
+              onTouchStart={(e) => {
+                if (isDrawPhase) {
+                  onTouchDragStart(e, { kind: "DRAW_CLOSED" });
+                }
+              }}
+              onClick={() => {
+                if (shouldSuppressClick()) return;
+                if (isDrawPhase) onDraw("CLOSED");
+              }}
+              className={`relative rounded-lg transition-transform ${
                 isDrawPhase
-                  ? "cursor-pointer draw-highlight ring-2 ring-[#f6e09e]"
+                  ? "cursor-grab active:cursor-grabbing touch-none draw-highlight ring-2 ring-[#f6e09e] hover:scale-105"
                   : "cursor-default"
+              } ${
+                activeDrag?.kind === "DRAW_CLOSED"
+                  ? "opacity-60 scale-95"
+                  : ""
               }`}
+              title={
+                isDrawPhase
+                  ? "Click or drag down to your hand to draw from Closed Deck"
+                  : "Closed Deck"
+              }
             >
               <Card faceDown size="deck" disabled={!isDrawPhase} />
               {/* Remaining Deck Count Badge */}
-              <div className="absolute -top-2 -right-2 bg-slate-950/95 text-[#f6e09e] border border-[#d4af37]/60 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full shadow-lg leading-none">
+              <div className="absolute -top-2 -right-2 bg-slate-950/95 text-[#f6e09e] border border-[#d4af37]/60 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full shadow-lg leading-none pointer-events-none">
                 {gameState.closedDeckCount}
               </div>
-            </motion.div>
+            </div>
           </div>
 
           <span className="mt-1.5 mobile-landscape:mt-1 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-bold uppercase tracking-wider text-emerald-100/80 leading-none">
@@ -172,60 +335,136 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
           </span>
         </div>
 
-        {/* COLUMN 2: OPEN DISCARD PILE + LAST 5 HOVER TOOLTIP */}
+        {/* COLUMN 2: OPEN DISCARD PILE (Click/Drag to Draw in DRAW phase; Drop Hand Card to Discard in DISCARD phase) */}
         <div
-          className="relative flex flex-col items-center"
+          data-drop-zone="discard-pile"
           onMouseEnter={() => setShowRecentTooltip(true)}
           onMouseLeave={() => setShowRecentTooltip(false)}
+          onDragOver={(e) => {
+            if (!isDraggingHandCard) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = isDiscardPhase ? "move" : "none";
+            onHoverZone({ zone: "discard-pile" });
+          }}
+          onDragLeave={(e) => {
+            if (
+              hoveredZone?.zone === "discard-pile" &&
+              !e.currentTarget.contains(e.relatedTarget as Node | null)
+            ) {
+              onHoverZone(null);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const item = parseDragDataTransfer(e.dataTransfer, activeDrag);
+            if (item && item.kind === "HAND_CARD") {
+              onDropOnZone(item, { zone: "discard-pile" });
+            }
+            onEndDrag();
+          }}
+          className={`relative flex flex-col items-center rounded-xl p-1 -m-1 transition-all ${
+            isDiscardZoneHovered && isDiscardPhase
+              ? "scale-105"
+              : ""
+          }`}
         >
-          {/* Hover Tooltip: Last 5 Discarded Cards */}
-          {showRecentTooltip && recentDiscards.length > 0 && (
-            <div className="hidden sm:block mobile-landscape:hidden absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-40 glass-panel rounded-xl px-2.5 py-2 border border-amber-400/35 shadow-2xl whitespace-nowrap pointer-events-none">
-              <div className="text-[9px] uppercase tracking-wider font-bold text-amber-300 mb-1 text-center">
-                Recent Discards (Last {recentDiscards.length})
-              </div>
-              <div className="flex items-center gap-1.5">
-                {recentDiscards.map((rc, i) => {
-                  const glyph = SUIT_GLYPH[rc.suit];
-                  return (
-                    <span
-                      key={`${rc.id}-${i}`}
-                      className={`px-1.5 py-0.5 rounded bg-slate-900/90 border text-[10px] font-bold font-mono ${
-                        i === 0
-                          ? "border-amber-400/70 text-white"
-                          : "border-white/10 text-slate-300"
-                      }`}
-                    >
-                      {rc.isPrintedJoker ? "JKR" : rc.rank}
-                      <span className={`ml-0.5 ${glyph.color}`}>
-                        {glyph.symbol}
-                      </span>
-                    </span>
-                  );
-                })}
-              </div>
+          {/* Floating "Drop to Discard" Hint when dragging a hand card over Open Pile */}
+          {isDiscardZoneActive && (
+            <div
+              className={`pointer-events-none absolute -top-7 left-1/2 -translate-x-1/2 z-40 px-2.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider whitespace-nowrap shadow-lg transition-all ${
+                isDiscardZoneHovered
+                  ? "bg-amber-400 text-slate-950 scale-110"
+                  : "bg-amber-500/85 text-slate-950/90 opacity-90"
+              }`}
+            >
+              Drop to Discard
             </div>
           )}
 
-          <motion.div
-            whileHover={
-              isDrawPhase && gameState.topDiscardCard
-                ? { scale: 1.04 }
-                : undefined
-            }
-            whileTap={
-              isDrawPhase && gameState.topDiscardCard
-                ? { scale: 0.95 }
-                : undefined
-            }
-            onClick={() =>
-              isDrawPhase && gameState.topDiscardCard && onDraw("DISCARD")
-            }
-            className={`relative z-10 rounded-lg ${
-              isDrawPhase && gameState.topDiscardCard
-                ? "cursor-pointer draw-highlight ring-2 ring-emerald-300"
+          {/* Hover Tooltip: Last 5 Discarded Cards (hidden while actively dragging) */}
+          {showRecentTooltip &&
+            !activeDrag &&
+            recentDiscards.length > 0 && (
+              <div className="hidden sm:block mobile-landscape:hidden absolute bottom-full mb-2 left-1/2 -translate-x-1/2 z-40 glass-panel rounded-xl px-2.5 py-2 border border-amber-400/35 shadow-2xl whitespace-nowrap pointer-events-none">
+                <div className="text-[9px] uppercase tracking-wider font-bold text-amber-300 mb-1 text-center">
+                  Recent Discards (Last {recentDiscards.length})
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {recentDiscards.map((rc, i) => {
+                    const glyph = SUIT_GLYPH[rc.suit];
+                    return (
+                      <span
+                        key={`${rc.id}-${i}`}
+                        className={`px-1.5 py-0.5 rounded bg-slate-900/90 border text-[10px] font-bold font-mono ${
+                          i === 0
+                            ? "border-amber-400/70 text-white"
+                            : "border-white/10 text-slate-300"
+                        }`}
+                      >
+                        {rc.isPrintedJoker ? "JKR" : rc.rank}
+                        <span className={`ml-0.5 ${glyph.color}`}>
+                          {glyph.symbol}
+                        </span>
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
+          <div
+            draggable={Boolean(isDrawPhase && gameState.topDiscardCard)}
+            onDragStart={(e) => {
+              if (!isDrawPhase || !gameState.topDiscardCard) {
+                e.preventDefault();
+                return;
+              }
+              const dragItem: TableDragItem = {
+                kind: "DRAW_OPEN",
+                card: gameState.topDiscardCard,
+              };
+              e.dataTransfer.effectAllowed = "copy";
+              e.dataTransfer.setData(
+                RUMMY_DRAG_MIME,
+                serializeDragItem(dragItem)
+              );
+              e.dataTransfer.setData("text/plain", "DRAW_OPEN");
+              onStartDrag(dragItem);
+            }}
+            onDragEnd={onEndDrag}
+            onTouchStart={(e) => {
+              if (isDrawPhase && gameState.topDiscardCard) {
+                onTouchDragStart(e, {
+                  kind: "DRAW_OPEN",
+                  card: gameState.topDiscardCard,
+                });
+              }
+            }}
+            onClick={() => {
+              if (shouldSuppressClick()) return;
+              if (isDrawPhase && gameState.topDiscardCard) {
+                onDraw("DISCARD");
+              }
+            }}
+            className={`relative z-10 rounded-lg transition-all ${
+              isDiscardZoneHovered && isDiscardPhase
+                ? "ring-4 ring-amber-400 shadow-[0_0_28px_rgba(251,191,36,0.75)]"
+                : isDiscardZoneActive
+                ? "ring-2 ring-amber-400/75 shadow-[0_0_18px_rgba(251,191,36,0.4)]"
+                : isDrawPhase && gameState.topDiscardCard
+                ? "cursor-grab active:cursor-grabbing touch-none draw-highlight ring-2 ring-emerald-300 hover:scale-105"
                 : "cursor-default"
+            } ${
+              activeDrag?.kind === "DRAW_OPEN" ? "opacity-60 scale-95" : ""
             }`}
+            title={
+              isDiscardPhase
+                ? "Drag a card from your hand here to discard"
+                : isDrawPhase && gameState.topDiscardCard
+                ? "Click or drag down to your hand to draw from Open Pile"
+                : "Open Discard Pile"
+            }
           >
             <AnimatePresence mode="wait">
               {gameState.topDiscardCard ? (
@@ -239,7 +478,7 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
                   <Card
                     card={gameState.topDiscardCard}
                     size="deck"
-                    disabled={!isDrawPhase}
+                    disabled={!isDrawPhase && !isDiscardZoneActive}
                   />
                 </motion.div>
               ) : (
@@ -250,36 +489,83 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             </AnimatePresence>
 
             {/* Discard Count Badge */}
-            <div className="absolute -top-2 -right-2 bg-slate-950/95 text-emerald-300 border border-emerald-400/45 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full shadow-lg leading-none">
+            <div className="absolute -top-2 -right-2 bg-slate-950/95 text-emerald-300 border border-emerald-400/45 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full shadow-lg leading-none pointer-events-none">
               {gameState.discardPileCount}
             </div>
-          </motion.div>
+          </div>
 
           <span className="mt-1.5 mobile-landscape:mt-1 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-bold uppercase tracking-wider text-emerald-100/80 leading-none">
             Open Pile
           </span>
         </div>
 
-        {/* COLUMN 3: FINISH / DECLARE SLOT */}
-        <div className="flex flex-col items-center">
+        {/* COLUMN 3: FINISH / DECLARE SLOT (Click OR Drop Hand Card to Declare in DISCARD phase) */}
+        <div
+          data-drop-zone="declare-slot"
+          onDragOver={(e) => {
+            if (!isDraggingHandCard) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = isDiscardPhase ? "move" : "none";
+            onHoverZone({ zone: "declare-slot" });
+          }}
+          onDragLeave={(e) => {
+            if (
+              hoveredZone?.zone === "declare-slot" &&
+              !e.currentTarget.contains(e.relatedTarget as Node | null)
+            ) {
+              onHoverZone(null);
+            }
+          }}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const item = parseDragDataTransfer(e.dataTransfer, activeDrag);
+            if (item && item.kind === "HAND_CARD") {
+              onDropOnZone(item, { zone: "declare-slot" });
+            }
+            onEndDrag();
+          }}
+          className="relative flex flex-col items-center"
+        >
+          {/* Floating "Drop to Declare" Hint when dragging a hand card over Declare Slot */}
+          {isDraggingHandCard && isDiscardPhase && (
+            <div
+              className={`pointer-events-none absolute -top-7 left-1/2 -translate-x-1/2 z-40 px-2.5 py-0.5 rounded-full text-[9px] sm:text-[10px] font-black uppercase tracking-wider whitespace-nowrap shadow-lg transition-all ${
+                isDeclareZoneHovered
+                  ? "bg-emerald-400 text-slate-950 scale-110"
+                  : "bg-emerald-500/85 text-slate-950/90 opacity-90"
+              }`}
+            >
+              Drop to Declare
+            </div>
+          )}
+
           <button
             type="button"
             onClick={() => isDiscardPhase && onOpenDeclare()}
-            disabled={!isDiscardPhase}
+            disabled={!isDiscardPhase && !isDraggingHandCard}
             className={`w-14 h-20 sm:w-[68px] sm:h-[98px] lg:w-[78px] lg:h-[112px] mobile-landscape:w-12 mobile-landscape:h-[68px] rounded-lg border-2 border-dashed flex flex-col items-center justify-center gap-1 px-1 text-center transition-all ${
-              isDiscardPhase
+              isDeclareZoneHovered && isDiscardPhase
+                ? "border-emerald-300 bg-emerald-500/30 text-emerald-100 scale-105 ring-4 ring-emerald-400/80 shadow-[0_0_28px_rgba(52,211,153,0.7)]"
+                : isDraggingHandCard && isDiscardPhase
+                ? "border-emerald-400/80 bg-emerald-500/15 text-emerald-200 ring-2 ring-emerald-400/50 shadow-[0_0_16px_rgba(52,211,153,0.35)]"
+                : isDeclareZoneHovered && !isDiscardPhase
+                ? "border-red-400/80 bg-red-500/15 text-red-200"
+                : isDiscardPhase
                 ? "border-[#f6e09e] bg-amber-500/15 hover:bg-amber-500/25 text-[#f6e09e] cursor-pointer shadow-[0_0_20px_rgba(212,175,55,0.3)] hover:scale-105"
                 : "border-[#d4af37]/35 bg-black/15 text-[#d4af37]/55 cursor-not-allowed"
             }`}
             title={
               isDiscardPhase
-                ? "Click to finish & declare your melds"
+                ? "Click or drag your finish card here to declare"
                 : "Available after drawing a card on your turn"
             }
           >
             <Award className="w-4 h-4 sm:w-5 sm:h-5 mobile-landscape:w-3.5 mobile-landscape:h-3.5 shrink-0" />
             <span className="text-[8px] sm:text-[9px] mobile-landscape:text-[7px] font-extrabold uppercase tracking-wider leading-tight">
-              Finish Slot
+              {isDeclareZoneHovered && isDiscardPhase
+                ? "Drop Finish"
+                : "Finish Slot"}
             </span>
           </button>
 
@@ -303,14 +589,17 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
           }`}
         />
         {isDrawPhase ? (
-          <span>Your Turn — Pick from Closed Deck or Open Pile</span>
+          <span>Your Turn — Click or Drag from Closed Deck / Open Pile</span>
         ) : isDiscardPhase ? (
-          <span>Your Turn — Select 1 card &amp; Discard or Finish</span>
+          <span>
+            Your Turn — Drag a card to Open Pile to Discard or Finish Slot to
+            Declare
+          </span>
         ) : activePlayer ? (
           <span>
             <strong className="text-white">{activePlayer.username}</strong> is
-            playing ({gameState.turnPhase === "DRAW" ? "Drawing" : "Discarding"}
-            )...
+            playing (
+            {gameState.turnPhase === "DRAW" ? "Drawing" : "Discarding"})...
           </span>
         ) : (
           <span>Table Ready</span>

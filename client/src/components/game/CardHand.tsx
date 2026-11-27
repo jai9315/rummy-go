@@ -1,31 +1,49 @@
 "use client";
 
 import { Award, EyeOff, Layers, Plus, RefreshCw } from "lucide-react";
-import React, { useCallback, useMemo, useRef, useState } from "react";
-import { DropTargetInfo, MeldGroupView } from "@/components/game/MeldGroup";
+import React, { useMemo } from "react";
+import {
+  parseDragDataTransfer,
+  TableDragItem,
+  TableDropZone,
+} from "@/components/game/dragTypes";
+import { MeldGroupView } from "@/components/game/MeldGroup";
 import { ClientEvaluator } from "@/lib/clientEvaluator";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useGameStore } from "@/store/useGameStore";
 
 interface CardHandProps {
+  activeDrag: TableDragItem | null;
+  hoveredZone: TableDropZone | null;
+  isDealingHand: boolean;
+  dealBatchKey: number;
+  shouldSuppressClick: () => boolean;
   onDiscard: (cardId: string) => void;
   onDeclare: (declareCardId?: string | null) => void;
   onDrop: () => void;
   onSort: (by: "SUIT" | "RANK") => void;
-}
-
-interface TouchDragState {
-  cardId: string;
-  startX: number;
-  startY: number;
-  active: boolean;
+  onStartDrag: (item: TableDragItem) => void;
+  onEndDrag: () => void;
+  onHoverZone: (zone: TableDropZone | null) => void;
+  onDropOnZone: (item: TableDragItem, zone: TableDropZone) => void;
+  onTouchDragStart: (e: React.TouchEvent, item: TableDragItem) => void;
 }
 
 export const CardHand: React.FC<CardHandProps> = ({
+  activeDrag,
+  hoveredZone,
+  isDealingHand,
+  dealBatchKey,
+  shouldSuppressClick,
   onDiscard,
   onDeclare,
   onDrop,
   onSort,
+  onStartDrag,
+  onEndDrag,
+  onHoverZone,
+  onDropOnZone,
+  onTouchDragStart,
 }) => {
   const user = useAuthStore((s) => s.user);
   const {
@@ -36,19 +54,8 @@ export const CardHand: React.FC<CardHandProps> = ({
     clearSelection,
     groupSelectedCards,
     ungroupMeld,
-    moveCard,
     setShowDeclareModal,
   } = useGameStore();
-
-  const [draggingCardId, setDraggingCardId] = useState<string | null>(null);
-  const [dropTarget, setDropTarget] = useState<DropTargetInfo | null>(null);
-  const [touchGhostPos, setTouchGhostPos] = useState<{
-    x: number;
-    y: number;
-  } | null>(null);
-
-  const touchDragRef = useRef<TouchDragState | null>(null);
-  const suppressNextClickRef = useRef<boolean>(false);
 
   const isPlaying = gameState?.status === "PLAYING";
   const isMyTurn = isPlaying && gameState?.currentTurnPlayerId === user?.id;
@@ -58,6 +65,17 @@ export const CardHand: React.FC<CardHandProps> = ({
   const liveDeadwoodPoints = useMemo(() => {
     if (handGroups.length === 0) return 0;
     return ClientEvaluator.calculatePlayerScore(handGroups).points;
+  }, [handGroups]);
+
+  // Compute cumulative card offset per meld group for staggered 13-card deal-in
+  const groupCardOffsets = useMemo(() => {
+    const offsets: number[] = [];
+    let running = 0;
+    for (const g of handGroups) {
+      offsets.push(running);
+      running += g.length;
+    }
+    return offsets;
   }, [handGroups]);
 
   const handleDiscardClick = () => {
@@ -77,142 +95,46 @@ export const CardHand: React.FC<CardHandProps> = ({
     onDeclare(preselectedCardId);
   };
 
-  const handleCardClick = useCallback(
-    (cardId: string) => {
-      if (suppressNextClickRef.current) {
-        suppressNextClickRef.current = false;
-        return;
-      }
-      toggleCardSelection(cardId);
-    },
-    [toggleCardSelection]
-  );
+  const handleCardClick = (cardId: string) => {
+    if (shouldSuppressClick()) return;
+    toggleCardSelection(cardId);
+  };
 
-  const handleDragStartCard = useCallback((cardId: string) => {
-    setDraggingCardId(cardId);
-  }, []);
-
-  const handleDragEndCard = useCallback(() => {
-    setDraggingCardId(null);
-    setDropTarget(null);
-  }, []);
-
-  const handleDropCard = useCallback(
-    (cardId: string, targetGroupIndex: number, targetCardIndex?: number) => {
-      moveCard(cardId, targetGroupIndex, targetCardIndex);
-      setDraggingCardId(null);
-      setDropTarget(null);
-    },
-    [moveCard]
-  );
-
-  const resolveTouchDropTarget = useCallback(
-    (clientX: number, clientY: number): DropTargetInfo | null => {
-      const el = document.elementFromPoint(clientX, clientY);
-      if (!el) return null;
-
-      const cardNode = el.closest("[data-card-index]");
-      if (cardNode) {
-        const gStr = cardNode.getAttribute("data-group-index");
-        const cStr = cardNode.getAttribute("data-card-index");
-        if (gStr !== null && cStr !== null) {
-          const gIdx = parseInt(gStr, 10);
-          const cIdx = parseInt(cStr, 10);
-          if (!Number.isNaN(gIdx) && !Number.isNaN(cIdx)) {
-            return { groupIndex: gIdx, cardIndex: cIdx };
-          }
-        }
-      }
-
-      const groupNode = el.closest("[data-group-index]");
-      if (groupNode) {
-        const gStr = groupNode.getAttribute("data-group-index");
-        if (gStr !== null) {
-          const gIdx = parseInt(gStr, 10);
-          if (!Number.isNaN(gIdx)) {
-            return { groupIndex: gIdx };
-          }
-        }
-      }
-
-      return null;
-    },
-    []
-  );
-
-  const handleTouchStartCard = useCallback(
-    (e: React.TouchEvent, cardId: string) => {
-      const touch = e.touches[0];
-      if (!touch) return;
-      touchDragRef.current = {
-        cardId,
-        startX: touch.clientX,
-        startY: touch.clientY,
-        active: false,
-      };
-    },
-    []
-  );
-
-  const handleTouchMoveCard = useCallback(
-    (e: React.TouchEvent) => {
-      const state = touchDragRef.current;
-      const touch = e.touches[0];
-      if (!state || !touch) return;
-
-      const dx = touch.clientX - state.startX;
-      const dy = touch.clientY - state.startY;
-
-      if (!state.active) {
-        if (Math.hypot(dx, dy) < 12) return;
-        state.active = true;
-        setDraggingCardId(state.cardId);
-      }
-
-      setTouchGhostPos({ x: touch.clientX, y: touch.clientY });
-      const target = resolveTouchDropTarget(touch.clientX, touch.clientY);
-      setDropTarget(target);
-    },
-    [resolveTouchDropTarget]
-  );
-
-  const handleTouchEndCard = useCallback(() => {
-    const state = touchDragRef.current;
-    if (state?.active) {
-      suppressNextClickRef.current = true;
-      setTimeout(() => {
-        suppressNextClickRef.current = false;
-      }, 250);
-
-      if (dropTarget) {
-        moveCard(state.cardId, dropTarget.groupIndex, dropTarget.cardIndex);
-      }
-    }
-    touchDragRef.current = null;
-    setDraggingCardId(null);
-    setDropTarget(null);
-    setTouchGhostPos(null);
-  }, [dropTarget, moveCard]);
-
+  const isDrawDrag =
+    activeDrag?.kind === "DRAW_CLOSED" || activeDrag?.kind === "DRAW_OPEN";
+  const isHandDrag = activeDrag?.kind === "HAND_CARD";
   const newGroupTargetIndex = handGroups.length;
   const isNewGroupTargeted =
-    draggingCardId !== null && dropTarget?.groupIndex === newGroupTargetIndex;
+    activeDrag !== null &&
+    hoveredZone?.zone === "new-group" &&
+    hoveredZone.groupIndex === newGroupTargetIndex;
+  const isTrayDropTargeted =
+    isDrawDrag &&
+    (hoveredZone?.zone === "hand-tray" ||
+      hoveredZone?.zone === "meld-group" ||
+      hoveredZone?.zone === "new-group");
+
+  const handleTrayDragOver = (e: React.DragEvent) => {
+    if (!isDrawDrag) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "copy";
+    if (!hoveredZone || hoveredZone.zone !== "meld-group") {
+      onHoverZone({ zone: "hand-tray" });
+    }
+  };
+
+  const handleTrayDrop = (e: React.DragEvent) => {
+    if (!isDrawDrag) return;
+    e.preventDefault();
+    const item = parseDragDataTransfer(e.dataTransfer, activeDrag);
+    if (item && (item.kind === "DRAW_CLOSED" || item.kind === "DRAW_OPEN")) {
+      onDropOnZone(item, { zone: "hand-tray" });
+    }
+    onEndDrag();
+  };
 
   return (
     <div className="w-full min-w-0 flex flex-col items-center gap-1.5 mobile-landscape:gap-0.5">
-      {/* Touch Drag Floating Pill */}
-      {touchGhostPos && draggingCardId && (
-        <div
-          style={{
-            left: touchGhostPos.x,
-            top: touchGhostPos.y - 36,
-          }}
-          className="fixed z-50 -translate-x-1/2 -translate-y-1/2 pointer-events-none px-3 py-1 rounded-full bg-amber-400 text-slate-950 font-black text-[11px] shadow-xl border border-amber-200"
-        >
-          Moving Card...
-        </div>
-      )}
-
       {/* Compact Action Toolbar + Live Deadwood Counter */}
       <div className="glass-panel flex flex-wrap mobile-landscape:flex-nowrap items-center justify-center gap-1 sm:gap-1.5 mobile-landscape:gap-1 px-2 py-1 mobile-landscape:px-1.5 mobile-landscape:py-0.5 rounded-xl mobile-landscape:rounded-lg max-w-full overflow-x-auto">
         <button
@@ -305,8 +227,26 @@ export const CardHand: React.FC<CardHandProps> = ({
         </div>
       </div>
 
-      {/* Glassmorphic 13-Card Hand Tray */}
-      <div className="glass-panel w-full rounded-2xl mobile-landscape:rounded-xl px-2 py-1.5 mobile-landscape:px-1.5 mobile-landscape:py-1 overflow-x-auto overflow-y-visible">
+      {/* Glassmorphic 13-Card Hand Tray (also accepts drag-to-draw drops from Closed Deck / Open Pile) */}
+      <div
+        data-drop-zone="hand-tray"
+        onDragOver={handleTrayDragOver}
+        onDrop={handleTrayDrop}
+        className={`relative glass-panel w-full rounded-2xl mobile-landscape:rounded-xl px-2 py-1.5 mobile-landscape:px-1.5 mobile-landscape:py-1 overflow-x-auto overflow-y-visible transition-all ${
+          isTrayDropTargeted
+            ? "ring-2 ring-emerald-400 border-emerald-300 bg-emerald-950/55 shadow-[0_0_24px_rgba(52,211,153,0.35)]"
+            : isDrawDrag
+            ? "ring-1 ring-[#f6e09e]/70 border-[#f6e09e]/50"
+            : ""
+        }`}
+      >
+        {/* Drag-to-Draw Hint Banner */}
+        {isDrawDrag && (
+          <div className="pointer-events-none absolute top-1 left-1/2 -translate-x-1/2 z-30 px-2.5 py-0.5 rounded-full bg-emerald-500/95 text-slate-950 text-[10px] font-black uppercase tracking-wider shadow-lg whitespace-nowrap">
+            Drop Here or on a Group to Draw
+          </div>
+        )}
+
         {handGroups.length === 0 ? (
           <div className="h-20 sm:h-24 mobile-landscape:h-16 flex items-center justify-center text-xs text-slate-400">
             Waiting for cards to be dealt...
@@ -319,50 +259,61 @@ export const CardHand: React.FC<CardHandProps> = ({
                 groupIndex={idx}
                 cards={group}
                 selectedCardIds={selectedCardIds}
-                draggingCardId={draggingCardId}
-                dropTarget={dropTarget}
+                activeDrag={activeDrag}
+                hoveredZone={hoveredZone}
+                isDealingHand={isDealingHand}
+                dealBatchKey={dealBatchKey}
+                dealIndexOffset={groupCardOffsets[idx] ?? 0}
                 onCardClick={handleCardClick}
                 onUngroup={
                   handGroups.length > 1 ? () => ungroupMeld(idx) : undefined
                 }
-                onDragStartCard={handleDragStartCard}
-                onDragEndCard={handleDragEndCard}
-                onHoverDropTarget={setDropTarget}
-                onDropCard={handleDropCard}
-                onTouchStartCard={handleTouchStartCard}
-                onTouchMoveCard={handleTouchMoveCard}
-                onTouchEndCard={handleTouchEndCard}
+                onStartDrag={onStartDrag}
+                onEndDrag={onEndDrag}
+                onHoverZone={onHoverZone}
+                onDropOnZone={onDropOnZone}
+                onTouchDragStart={onTouchDragStart}
               />
             ))}
 
-            {/* "+ New Group" Drop Zone shown while dragging */}
-            {draggingCardId && (
+            {/* "+ New Group" Drop Zone shown while dragging a hand card or drawing a card */}
+            {(isHandDrag || isDrawDrag) && (
               <div
+                data-drop-zone="new-group"
                 data-group-index={newGroupTargetIndex}
                 onDragOver={(e) => {
                   e.preventDefault();
-                  e.dataTransfer.dropEffect = "move";
-                  if (dropTarget?.groupIndex !== newGroupTargetIndex) {
-                    setDropTarget({ groupIndex: newGroupTargetIndex });
-                  }
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = isDrawDrag ? "copy" : "move";
+                  onHoverZone({
+                    zone: "new-group",
+                    groupIndex: newGroupTargetIndex,
+                  });
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
-                  const cardId =
-                    e.dataTransfer.getData("text/plain") || draggingCardId;
-                  if (cardId) {
-                    handleDropCard(cardId, newGroupTargetIndex);
+                  e.stopPropagation();
+                  const item = parseDragDataTransfer(
+                    e.dataTransfer,
+                    activeDrag
+                  );
+                  if (item) {
+                    onDropOnZone(item, {
+                      zone: "new-group",
+                      groupIndex: newGroupTargetIndex,
+                    });
                   }
+                  onEndDrag();
                 }}
                 className={`min-w-[68px] h-20 sm:h-24 mobile-landscape:min-w-[54px] mobile-landscape:h-16 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 px-2 text-xs font-bold transition shrink-0 ${
                   isNewGroupTargeted
-                    ? "border-[#f6e09e] bg-amber-500/20 text-[#f6e09e] scale-105"
+                    ? "border-[#f6e09e] bg-amber-500/25 text-[#f6e09e] scale-105 shadow-[0_0_16px_rgba(246,224,158,0.4)]"
                     : "border-emerald-400/50 bg-emerald-950/40 text-emerald-300/80"
                 }`}
               >
                 <Plus className="w-4 h-4" />
                 <span className="text-[9px] uppercase tracking-wider text-center leading-tight">
-                  New Group
+                  + New Group
                 </span>
               </div>
             )}

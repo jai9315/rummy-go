@@ -13,6 +13,7 @@ interface CardProps {
   size?: "sm" | "hand" | "deck" | "md" | "lg";
   className?: string;
   disabled?: boolean;
+  dealDelay?: number;
 }
 
 const SUIT_SYMBOLS: Record<Suit, string> = {
@@ -40,6 +41,7 @@ export const Card: React.FC<CardProps> = ({
   size = "md",
   className = "",
   disabled = false,
+  dealDelay,
 }) => {
   const sizeClasses = {
     sm: "w-10 h-14 sm:w-11 sm:h-16 text-[10px] sm:text-[11px] p-0.5 sm:p-1",
@@ -76,18 +78,34 @@ export const Card: React.FC<CardProps> = ({
   const suitSymbol = SUIT_SYMBOLS[card.suit];
   const suitColor = SUIT_COLORS[card.suit];
 
+  const isDealingIn = typeof dealDelay === "number";
+
   return (
     <motion.div
-      layout
-      initial={{ opacity: 0, y: -10, scale: 0.94 }}
+      layout={!isDealingIn}
+      initial={
+        isDealingIn
+          ? { opacity: 0, y: -34, scale: 0.78, rotate: -7 }
+          : { opacity: 0, y: -10, scale: 0.94 }
+      }
       animate={{
-        opacity: isDragging ? 0.55 : 1,
+        opacity: isDragging ? 0.45 : 1,
         y: isSelected ? -10 : 0,
         scale: isDragging ? 1.04 : 1,
+        rotate: 0,
       }}
       exit={{ opacity: 0, y: -12, scale: 0.9 }}
-      whileHover={!disabled && !isSelected ? { y: -5 } : undefined}
-      transition={{ type: "spring", stiffness: 420, damping: 28 }}
+      whileHover={!disabled && !isSelected && !isDragging ? { y: -5 } : undefined}
+      transition={
+        isDealingIn
+          ? {
+              type: "spring",
+              stiffness: 340,
+              damping: 25,
+              delay: dealDelay,
+            }
+          : { type: "spring", stiffness: 420, damping: 28 }
+      }
       onClick={!disabled ? onClick : undefined}
       className={`
         ${sizeClasses}

@@ -3,47 +3,51 @@
 import { AnimatePresence, motion } from "framer-motion";
 import { Ungroup } from "lucide-react";
 import React from "react";
+import {
+  parseDragDataTransfer,
+  RUMMY_DRAG_MIME,
+  serializeDragItem,
+  TableDragItem,
+  TableDropZone,
+} from "@/components/game/dragTypes";
 import { ClientEvaluator } from "../../lib/clientEvaluator";
 import { Card as CardType } from "../../types";
 import { Card } from "./Card";
-
-export interface DropTargetInfo {
-  groupIndex: number;
-  cardIndex?: number;
-}
 
 interface MeldGroupProps {
   cards: CardType[];
   groupIndex: number;
   selectedCardIds: string[];
-  draggingCardId: string | null;
-  dropTarget: DropTargetInfo | null;
+  activeDrag: TableDragItem | null;
+  hoveredZone: TableDropZone | null;
+  isDealingHand?: boolean;
+  dealBatchKey?: number;
+  dealIndexOffset?: number;
   onCardClick: (cardId: string) => void;
   onUngroup?: () => void;
-  onDragStartCard: (cardId: string) => void;
-  onDragEndCard: () => void;
-  onHoverDropTarget: (target: DropTargetInfo | null) => void;
-  onDropCard: (cardId: string, targetGroupIndex: number, targetCardIndex?: number) => void;
-  onTouchStartCard: (e: React.TouchEvent, cardId: string) => void;
-  onTouchMoveCard: (e: React.TouchEvent) => void;
-  onTouchEndCard: () => void;
+  onStartDrag: (item: TableDragItem) => void;
+  onEndDrag: () => void;
+  onHoverZone: (zone: TableDropZone | null) => void;
+  onDropOnZone: (item: TableDragItem, zone: TableDropZone) => void;
+  onTouchDragStart: (e: React.TouchEvent, item: TableDragItem) => void;
 }
 
 export const MeldGroupView: React.FC<MeldGroupProps> = ({
   cards,
   groupIndex,
   selectedCardIds,
-  draggingCardId,
-  dropTarget,
+  activeDrag,
+  hoveredZone,
+  isDealingHand = false,
+  dealBatchKey = 0,
+  dealIndexOffset = 0,
   onCardClick,
   onUngroup,
-  onDragStartCard,
-  onDragEndCard,
-  onHoverDropTarget,
-  onDropCard,
-  onTouchStartCard,
-  onTouchMoveCard,
-  onTouchEndCard,
+  onStartDrag,
+  onEndDrag,
+  onHoverZone,
+  onDropOnZone,
+  onTouchDragStart,
 }) => {
   const meld = ClientEvaluator.evaluateMeld(cards);
 
@@ -70,39 +74,47 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
     },
   }[meld.type];
 
-  const isGroupTargeted =
-    draggingCardId !== null && dropTarget?.groupIndex === groupIndex;
+  const isDrawDrag =
+    activeDrag?.kind === "DRAW_CLOSED" || activeDrag?.kind === "DRAW_OPEN";
+  const draggingCardId =
+    activeDrag?.kind === "HAND_CARD" ? activeDrag.cardId : null;
+
+  const isGroupHovered =
+    activeDrag !== null &&
+    hoveredZone?.zone === "meld-group" &&
+    hoveredZone.groupIndex === groupIndex;
 
   const handleGroupDragOver = (e: React.DragEvent) => {
     e.preventDefault();
-    e.dataTransfer.dropEffect = "move";
-    if (
-      dropTarget?.groupIndex !== groupIndex ||
-      dropTarget?.cardIndex !== undefined
-    ) {
-      onHoverDropTarget({ groupIndex });
-    }
+    e.dataTransfer.dropEffect = isDrawDrag ? "copy" : "move";
+    onHoverZone({ zone: "meld-group", groupIndex });
   };
 
   const handleGroupDrop = (e: React.DragEvent) => {
     e.preventDefault();
-    const cardId = e.dataTransfer.getData("text/plain") || draggingCardId;
-    if (cardId) {
-      onDropCard(cardId, groupIndex);
+    e.stopPropagation();
+    const item = parseDragDataTransfer(e.dataTransfer, activeDrag);
+    if (item) {
+      onDropOnZone(item, { zone: "meld-group", groupIndex });
     }
-    onDragEndCard();
+    onEndDrag();
   };
 
   return (
     <motion.div
-      layout
+      layout={!isDealingHand}
       transition={{ type: "spring", stiffness: 360, damping: 28 }}
+      data-drop-zone="meld-group"
       data-group-index={groupIndex}
       onDragOver={handleGroupDragOver}
       onDrop={handleGroupDrop}
-      className={`flex flex-col items-center px-1.5 py-1 mobile-landscape:px-1 mobile-landscape:py-0.5 rounded-xl mobile-landscape:rounded-lg border transition-colors shrink-0 ${
-        isGroupTargeted
-          ? "bg-emerald-900/50 border-[#f6e09e] ring-2 ring-[#f6e09e]/50"
+      className={`flex flex-col items-center px-1.5 py-1 mobile-landscape:px-1 mobile-landscape:py-0.5 rounded-xl mobile-landscape:rounded-lg border transition-all shrink-0 ${
+        isGroupHovered
+          ? isDrawDrag
+            ? "bg-emerald-900/55 border-emerald-300 ring-2 ring-emerald-400/60 shadow-[0_0_16px_rgba(52,211,153,0.35)]"
+            : "bg-emerald-900/50 border-[#f6e09e] ring-2 ring-[#f6e09e]/60"
+          : isDrawDrag
+          ? "bg-slate-900/60 border-emerald-400/35"
           : "bg-slate-950/45 border-white/10"
       }`}
     >
@@ -139,58 +151,87 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
             const isCardDropTarget =
               draggingCardId !== null &&
               draggingCardId !== card.id &&
-              dropTarget?.groupIndex === groupIndex &&
-              dropTarget?.cardIndex === cardIdx;
+              hoveredZone?.zone === "meld-group" &&
+              hoveredZone.groupIndex === groupIndex &&
+              hoveredZone.cardIndex === cardIdx;
+
+            const cardKey = `${dealBatchKey}-${card.id}`;
+            const staggerDelay = isDealingHand
+              ? Math.min((dealIndexOffset + cardIdx) * 0.045, 0.65)
+              : undefined;
 
             return (
               <div
-                key={card.id}
+                key={cardKey}
                 draggable
                 data-card-id={card.id}
+                data-drop-zone="meld-group"
                 data-group-index={groupIndex}
                 data-card-index={cardIdx}
                 onDragStart={(e) => {
+                  const dragItem: TableDragItem = {
+                    kind: "HAND_CARD",
+                    cardId: card.id,
+                    card,
+                  };
                   e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData(
+                    RUMMY_DRAG_MIME,
+                    serializeDragItem(dragItem)
+                  );
                   e.dataTransfer.setData("text/plain", card.id);
-                  onDragStartCard(card.id);
+                  onStartDrag(dragItem);
                 }}
                 onDragOver={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  e.dataTransfer.dropEffect = "move";
-                  if (
-                    dropTarget?.groupIndex !== groupIndex ||
-                    dropTarget?.cardIndex !== cardIdx
-                  ) {
-                    onHoverDropTarget({ groupIndex, cardIndex: cardIdx });
-                  }
+                  e.dataTransfer.dropEffect = isDrawDrag ? "copy" : "move";
+                  onHoverZone({
+                    zone: "meld-group",
+                    groupIndex,
+                    cardIndex: isDrawDrag ? undefined : cardIdx,
+                  });
                 }}
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const cardId =
-                    e.dataTransfer.getData("text/plain") || draggingCardId;
-                  if (cardId) {
-                    onDropCard(cardId, groupIndex, cardIdx);
+                  const item = parseDragDataTransfer(
+                    e.dataTransfer,
+                    activeDrag
+                  );
+                  if (item) {
+                    onDropOnZone(item, {
+                      zone: "meld-group",
+                      groupIndex,
+                      cardIndex: item.kind === "HAND_CARD" ? cardIdx : undefined,
+                    });
                   }
-                  onDragEndCard();
+                  onEndDrag();
                 }}
-                onDragEnd={onDragEndCard}
-                onTouchStart={(e) => onTouchStartCard(e, card.id)}
-                onTouchMove={onTouchMoveCard}
-                onTouchEnd={onTouchEndCard}
-                onTouchCancel={onTouchEndCard}
-                className={`relative z-10 hover:z-30 transition-transform touch-pan-x ${
+                onDragEnd={onEndDrag}
+                onTouchStart={(e) =>
+                  onTouchDragStart(e, {
+                    kind: "HAND_CARD",
+                    cardId: card.id,
+                    card,
+                  })
+                }
+                className={`relative z-10 hover:z-30 transition-all touch-pan-x ${
                   cardIdx > 0
                     ? "-ml-4 sm:-ml-5 xl:-ml-6 mobile-landscape:-ml-3.5"
                     : ""
-                } ${isCardDropTarget ? "pl-2 border-l-2 border-[#f6e09e]" : ""}`}
+                } ${
+                  isCardDropTarget
+                    ? "pl-2.5 border-l-2 border-[#f6e09e]"
+                    : ""
+                }`}
               >
                 <Card
                   card={card}
                   size="hand"
                   isSelected={selectedCardIds.includes(card.id)}
                   isDragging={isBeingDragged}
+                  dealDelay={staggerDelay}
                   onClick={() => onCardClick(card.id)}
                 />
               </div>

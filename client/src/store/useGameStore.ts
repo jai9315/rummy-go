@@ -48,9 +48,11 @@ interface GameStoreState {
   activeReactions: TableReaction[];
   showDeclareModal: boolean;
   declareCardId: string | null;
+  pendingDrawTargetGroupIndex: number | null;
 
   setGameState: (state: PublicGameState | null) => void;
   setPrivateHand: (cards: Card[], options?: SetPrivateHandOptions) => void;
+  setPendingDrawTargetGroup: (groupIndex: number | null) => void;
   setLobbyPlayers: (players: LobbyPlayer[]) => void;
   setError: (err: string | null) => void;
   setKickedMessage: (msg: string | null) => void;
@@ -93,8 +95,12 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   activeReactions: [],
   showDeclareModal: false,
   declareCardId: null,
+  pendingDrawTargetGroupIndex: null,
 
   setGameState: (state) => set({ gameState: state }),
+
+  setPendingDrawTargetGroup: (groupIndex) =>
+    set({ pendingDrawTargetGroupIndex: groupIndex }),
 
   setPrivateHand: (cards, options) => {
     const validCardIds = new Set(cards.map((c) => c.id));
@@ -102,6 +108,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       validCardIds.has(id)
     );
     const currentGroups = get().handGroups;
+    const pendingTargetGroup = get().pendingDrawTargetGroupIndex;
 
     // Apply incoming order directly when groups are empty or an explicit sort was requested
     if (options?.applyOrder || currentGroups.length === 0) {
@@ -109,6 +116,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
         privateHand: cards,
         handGroups: cards.length > 0 ? [cards] : [],
         selectedCardIds: prunedSelectedCardIds,
+        pendingDrawTargetGroupIndex: null,
       });
       return;
     }
@@ -128,10 +136,21 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       }
     }
 
-    // Any remaining new cards added to last group or new group
+    // Place any newly drawn card(s) into the dropped target meld group (if chosen) or last group
     const unplaced = cards.filter((c) => !placedIds.has(c.id));
     if (unplaced.length > 0) {
-      if (newGroups.length > 0) {
+      if (
+        pendingTargetGroup !== null &&
+        pendingTargetGroup >= 0 &&
+        pendingTargetGroup < newGroups.length
+      ) {
+        newGroups[pendingTargetGroup].push(...unplaced);
+      } else if (
+        pendingTargetGroup !== null &&
+        pendingTargetGroup >= newGroups.length
+      ) {
+        newGroups.push([...unplaced]);
+      } else if (newGroups.length > 0) {
         newGroups[newGroups.length - 1].push(...unplaced);
       } else {
         newGroups.push(unplaced);
@@ -142,6 +161,8 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       privateHand: cards,
       handGroups: newGroups,
       selectedCardIds: prunedSelectedCardIds,
+      pendingDrawTargetGroupIndex:
+        unplaced.length > 0 ? null : pendingTargetGroup,
     });
   },
 
