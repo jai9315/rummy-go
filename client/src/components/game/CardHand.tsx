@@ -182,7 +182,7 @@ export const CardHand: React.FC<CardHandProps> = ({
     draggingCardId !== null && dropTarget?.groupIndex === newGroupTargetIndex;
 
   return (
-    <div className="w-full flex flex-col items-center gap-1 sm:gap-1.5 px-1.5 sm:px-3 pt-1.5 pb-1.5">
+    <div className="w-full flex flex-col items-center gap-1 sm:gap-1.5 mobile-landscape:gap-0.5 px-1.5 sm:px-3 mobile-landscape:px-2 pt-1.5 pb-1.5 mobile-landscape:pt-1 mobile-landscape:pb-1">
       {/* Touch Drag Floating Pill */}
       {touchGhostPos && draggingCardId && (
         <div
@@ -196,33 +196,33 @@ export const CardHand: React.FC<CardHandProps> = ({
         </div>
       )}
 
-      {/* Compact Action Toolbar (2x3 grid on narrow phones, single tight row on sm+) */}
-      <div className="grid grid-cols-3 sm:flex sm:flex-wrap items-center justify-center gap-1 sm:gap-1.5 w-full max-w-sm sm:w-auto sm:max-w-none bg-zinc-900/90 backdrop-blur-md px-1.5 sm:px-2.5 py-1 rounded-xl border border-amber-500/25 shadow-lg">
+      {/* Compact Action Toolbar (single 32px row on mobile landscape & sm+) */}
+      <div className="grid grid-cols-3 sm:flex sm:flex-wrap mobile-landscape:flex mobile-landscape:flex-nowrap items-center justify-center gap-1 sm:gap-1.5 mobile-landscape:gap-1 w-full max-w-sm sm:w-auto sm:max-w-none mobile-landscape:w-auto mobile-landscape:max-w-none mobile-landscape:h-8 bg-zinc-900/90 backdrop-blur-md px-1.5 sm:px-2.5 mobile-landscape:px-2 py-1 mobile-landscape:py-0.5 rounded-xl mobile-landscape:rounded-lg border border-amber-500/25 shadow-lg">
         {/* Sort Suit */}
         <button
           onClick={() => onSort("SUIT")}
-          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
+          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 mobile-landscape:px-2 py-1 mobile-landscape:py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs mobile-landscape:text-[11px] font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
         >
           <RefreshCw className="w-3 h-3 text-amber-400 shrink-0" />
-          <span className="sm:hidden">Suit</span>
-          <span className="hidden sm:inline">Sort Suit</span>
+          <span className="sm:hidden mobile-landscape:hidden">Suit</span>
+          <span className="hidden sm:inline mobile-landscape:inline">Sort Suit</span>
         </button>
 
         {/* Sort Rank */}
         <button
           onClick={() => onSort("RANK")}
-          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
+          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 mobile-landscape:px-2 py-1 mobile-landscape:py-0.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs mobile-landscape:text-[11px] font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
         >
           <RefreshCw className="w-3 h-3 text-blue-400 shrink-0" />
-          <span className="sm:hidden">Rank</span>
-          <span className="hidden sm:inline">Sort Rank</span>
+          <span className="sm:hidden mobile-landscape:hidden">Rank</span>
+          <span className="hidden sm:inline mobile-landscape:inline">Sort Rank</span>
         </button>
 
         {/* Group Selected */}
         <button
           onClick={groupSelectedCards}
           disabled={selectedCardIds.length < 2}
-          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-semibold transition whitespace-nowrap ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 mobile-landscape:px-2 py-1 mobile-landscape:py-0.5 rounded-lg text-[11px] sm:text-xs mobile-landscape:text-[11px] font-semibold transition whitespace-nowrap ${
             selectedCardIds.length >= 2
               ? "bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold shadow-md shadow-amber-500/20"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
@@ -232,13 +232,13 @@ export const CardHand: React.FC<CardHandProps> = ({
           <span>Group ({selectedCardIds.length})</span>
         </button>
 
-        <div className="h-4 w-px bg-zinc-700 mx-0.5 hidden sm:block" />
+        <div className="h-4 w-px bg-zinc-700 mx-0.5 hidden sm:block mobile-landscape:block" />
 
         {/* Discard */}
         <button
           onClick={handleDiscardClick}
           disabled={!isDiscardPhase || selectedCardIds.length !== 1}
-          className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition whitespace-nowrap ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-3 mobile-landscape:px-2.5 py-1 mobile-landscape:py-0.5 rounded-lg text-[11px] sm:text-xs mobile-landscape:text-[11px] font-bold transition whitespace-nowrap ${
             isDiscardPhase && selectedCardIds.length === 1
               ? "bg-red-600 hover:bg-red-500 text-white shadow-md shadow-red-600/30 animate-pulse"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
@@ -251,13 +251,13 @@ export const CardHand: React.FC<CardHandProps> = ({
         <button
           onClick={handleDeclareClick}
           disabled={!isDiscardPhase}
-          className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition whitespace-nowrap ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-3 mobile-landscape:px-2.5 py-1 mobile-landscape:py-0.5 rounded-lg text-[11px] sm:text-xs mobile-landscape:text-[11px] font-bold transition whitespace-nowrap ${
             isDiscardPhase
               ? "bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-zinc-950 shadow-md shadow-amber-500/30"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
           }`}
         >
-          <Award className="w-3.5 h-3.5 shrink-0" />
+          <Award className="w-3.5 h-3.5 mobile-landscape:w-3 mobile-landscape:h-3 shrink-0" />
           <span>Declare</span>
         </button>
 
@@ -265,7 +265,7 @@ export const CardHand: React.FC<CardHandProps> = ({
         <button
           onClick={onDrop}
           disabled={!isDrawPhase}
-          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-semibold transition whitespace-nowrap ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 mobile-landscape:px-2 py-1 mobile-landscape:py-0.5 rounded-lg text-[11px] sm:text-xs mobile-landscape:text-[11px] font-semibold transition whitespace-nowrap ${
             isDrawPhase
               ? "bg-zinc-800 hover:bg-red-950 text-red-400 border border-red-500/40"
               : "bg-zinc-800/40 text-zinc-600 border border-zinc-800 cursor-not-allowed"
@@ -276,9 +276,9 @@ export const CardHand: React.FC<CardHandProps> = ({
         </button>
       </div>
 
-      {/* Hand Melds Tray (smooth horizontal touch scroll on narrow screens, centered via w-max mx-auto) */}
+      {/* Hand Melds Tray (smooth horizontal touch scroll when needed, centered via w-max mx-auto) */}
       <div className="w-full overflow-x-auto overflow-y-visible">
-        <div className="flex items-end gap-2 sm:gap-3 w-max mx-auto px-1 pt-1 pb-0.5">
+        <div className="flex items-end gap-2 sm:gap-3 mobile-landscape:gap-1.5 w-max mx-auto px-1 pt-1 pb-0.5 mobile-landscape:pt-0 mobile-landscape:pb-0">
           {handGroups.map((group, idx) => (
             <MeldGroupView
               key={idx}
@@ -317,7 +317,7 @@ export const CardHand: React.FC<CardHandProps> = ({
                   handleDropCard(cardId, newGroupTargetIndex);
                 }
               }}
-              className={`min-w-[72px] h-20 sm:h-24 xl:h-28 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 px-2 text-xs font-bold transition shrink-0 ${
+              className={`min-w-[72px] h-20 sm:h-24 xl:h-28 mobile-landscape:min-w-[60px] mobile-landscape:h-16 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 px-2 text-xs font-bold transition shrink-0 ${
                 isNewGroupTargeted
                   ? "border-amber-400 bg-amber-500/20 text-amber-200 scale-105"
                   : "border-emerald-500/50 bg-emerald-950/40 text-emerald-300/80"

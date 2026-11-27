@@ -55,7 +55,7 @@ export const VideoFallbackGrid: React.FC<VideoFallbackGridProps> = () => {
   const selfPlayer = gameState.players.find((p) => p.id === user?.id);
 
   return (
-    <div className="w-full flex items-center justify-center flex-wrap gap-1.5 sm:gap-2.5 max-w-5xl mx-auto px-1">
+    <div className="w-full flex items-center justify-center flex-wrap mobile-landscape:flex-nowrap mobile-landscape:overflow-x-auto gap-1.5 sm:gap-2.5 mobile-landscape:gap-1.5 max-w-5xl mx-auto px-1">
       {otherPlayers.map((player) => (
         <VideoTile
           key={player.id}
@@ -180,7 +180,7 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
   return (
     <div className="w-full flex flex-col items-center">
       {!isVideoCollapsed && (
-        <div className="w-full flex items-center justify-center flex-wrap gap-1.5 sm:gap-2.5 max-w-5xl mx-auto px-1">
+        <div className="w-full flex items-center justify-center flex-wrap mobile-landscape:flex-nowrap mobile-landscape:overflow-x-auto gap-1.5 sm:gap-2.5 mobile-landscape:gap-1.5 max-w-5xl mx-auto px-1">
           {/* Other players video tiles */}
           {otherPlayers.map((player) => {
             const remoteParticipant = participants.find(

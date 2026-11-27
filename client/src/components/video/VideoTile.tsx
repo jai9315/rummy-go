@@ -32,11 +32,11 @@ const InlineOpponentCardFan: React.FC<{ cardCount: number }> = ({ cardCount }) =
 
   return (
     <div
-      className="flex items-center gap-1 bg-zinc-950/85 border border-amber-500/40 rounded px-1 py-0.5 select-none shrink-0"
+      className="flex items-center gap-1 bg-zinc-950/85 border border-amber-500/40 rounded px-1 py-0.5 mobile-landscape:px-1 mobile-landscape:py-0 select-none shrink-0"
       aria-label={`${cardCount} cards in hand`}
       title={`${cardCount} cards in hand`}
     >
-      <div className="hidden sm:flex items-end justify-center h-3 pr-0.5">
+      <div className="hidden sm:flex mobile-landscape:hidden items-end justify-center h-3 pr-0.5">
         {Array.from({ length: visibleBacks }).map((_, idx) => {
           const offset = idx - mid;
           const rotateDeg = offset * 7;
@@ -51,7 +51,7 @@ const InlineOpponentCardFan: React.FC<{ cardCount: number }> = ({ cardCount }) =
           );
         })}
       </div>
-      <span className="text-[9px] font-mono font-bold text-amber-300 leading-none">
+      <span className="text-[9px] mobile-landscape:text-[8px] font-mono font-bold text-amber-300 leading-none">
         {cardCount}
       </span>
     </div>
@@ -81,8 +81,9 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   return (
     <div
       className={`
-        relative w-20 h-16 sm:w-28 sm:h-20 md:w-36 md:h-24 [@media(max-height:540px)]:w-24 [@media(max-height:540px)]:h-14
-        rounded-xl overflow-hidden bg-zinc-950/90 backdrop-blur-md shadow-lg
+        relative w-20 h-16 sm:w-28 sm:h-20 md:w-36 md:h-24
+        mobile-landscape:w-[88px] mobile-landscape:h-12 mobile-landscape:aspect-video
+        rounded-xl mobile-landscape:rounded-lg overflow-hidden bg-zinc-950/90 backdrop-blur-md shadow-lg
         border-2 transition-all duration-200 shrink-0
         ${
           player.isCurrentTurn
@@ -102,8 +103,8 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           className="w-full h-full object-cover"
         />
       ) : (
-        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-zinc-900 to-zinc-950 pb-4">
-          <div className="relative w-7 h-7 sm:w-9 sm:h-9 md:w-10 md:h-10 rounded-full overflow-hidden border border-zinc-700 shadow">
+        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-zinc-900 to-zinc-950 pb-4 mobile-landscape:pb-2.5">
+          <div className="relative w-7 h-7 sm:w-9 sm:h-9 md:w-10 md:h-10 mobile-landscape:w-6 mobile-landscape:h-6 rounded-full overflow-hidden border border-zinc-700 shadow">
             <Image
               src={
                 player.profileImage ||
@@ -116,20 +117,20 @@ export const VideoTile: React.FC<VideoTileProps> = ({
               className="object-cover"
             />
           </div>
-          <span className="hidden md:block text-[9px] text-zinc-500 font-medium leading-tight mt-0.5">
+          <span className="hidden md:block mobile-landscape:hidden text-[9px] text-zinc-500 font-medium leading-tight mt-0.5">
             {cameraLabel}
           </span>
         </div>
       )}
 
       {/* Top Status Bar (Seat & Mic) */}
-      <div className="absolute top-1 inset-x-1 flex items-center justify-between z-10 pointer-events-none">
-        <span className="bg-black/65 backdrop-blur-sm text-zinc-300 text-[9px] font-bold px-1 py-0.5 rounded leading-none">
+      <div className="absolute top-1 inset-x-1 mobile-landscape:top-0.5 mobile-landscape:inset-x-0.5 flex items-center justify-between z-10 pointer-events-none">
+        <span className="bg-black/65 backdrop-blur-sm text-zinc-300 text-[9px] mobile-landscape:text-[8px] font-bold px-1 py-0.5 mobile-landscape:py-0 rounded leading-none">
           S{player.seatNumber}
         </span>
 
         <div
-          className={`p-0.5 sm:p-1 rounded-full backdrop-blur-md ${
+          className={`p-0.5 sm:p-1 mobile-landscape:p-0.5 rounded-full backdrop-blur-md ${
             isMuted
               ? "bg-red-600/80 text-white"
               : isSpeaking
@@ -138,16 +139,16 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           }`}
         >
           {isMuted ? (
-            <MicOff className="w-2.5 h-2.5" />
+            <MicOff className="w-2.5 h-2.5 mobile-landscape:w-2 mobile-landscape:h-2" />
           ) : (
-            <Mic className="w-2.5 h-2.5" />
+            <Mic className="w-2.5 h-2.5 mobile-landscape:w-2 mobile-landscape:h-2" />
           )}
         </div>
       </div>
 
       {/* Bottom Info Bar (Username, Turn, Connection, & Inline Opponent Card Fan) */}
-      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-1.5 pb-1 pt-3 flex flex-col z-10">
-        <div className="flex items-center justify-between gap-1 text-[10px] font-bold text-white leading-tight">
+      <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-1.5 pb-1 pt-3 mobile-landscape:px-1 mobile-landscape:pb-0.5 mobile-landscape:pt-1.5 flex flex-col z-10">
+        <div className="flex items-center justify-between gap-1 text-[10px] mobile-landscape:text-[8px] font-bold text-white leading-tight">
           <span className="truncate min-w-0">
             {player.username}
             {isSelf ? " (You)" : ""}
@@ -156,13 +157,13 @@ export const VideoTile: React.FC<VideoTileProps> = ({
           {!isSelf && !player.hasDropped ? (
             <InlineOpponentCardFan cardCount={player.cardCount} />
           ) : (
-            <span className="bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[9px] px-1 rounded font-mono leading-none py-0.5 shrink-0">
+            <span className="bg-amber-500/20 border border-amber-500/40 text-amber-300 text-[9px] mobile-landscape:text-[8px] px-1 rounded font-mono leading-none py-0.5 mobile-landscape:py-0 shrink-0">
               {player.cardCount}
             </span>
           )}
         </div>
 
-        <div className="flex items-center justify-between text-[8px] sm:text-[9px] mt-0.5 leading-none">
+        <div className="flex mobile-landscape:hidden items-center justify-between text-[8px] sm:text-[9px] mt-0.5 leading-none">
           {player.hasDropped ? (
             <span className="text-red-400 font-semibold">Dropped</span>
           ) : player.isCurrentTurn ? (

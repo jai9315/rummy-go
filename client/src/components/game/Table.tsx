@@ -26,6 +26,7 @@ import { Card } from "@/components/game/Card";
 import { CardHand } from "@/components/game/CardHand";
 import { DeckPiles } from "@/components/game/DeckPiles";
 import { DeclareModal } from "@/components/game/DeclareModal";
+import { RotateDeviceOverlay } from "@/components/game/RotateDeviceOverlay";
 import { VideoErrorBoundary } from "@/components/video/VideoErrorBoundary";
 import { VideoOverlay } from "@/components/video/VideoOverlay";
 import { ClientEvaluator } from "@/lib/clientEvaluator";
@@ -256,6 +257,9 @@ export const Table: React.FC<TableProps> = ({
 
   return (
     <div className="relative h-[100dvh] w-full overflow-hidden flex flex-col justify-between bg-zinc-950 text-white select-none">
+      {/* Mobile Portrait Lock Overlay (CSS-only visibility — keeps Table, Socket.IO & LiveKit mounted) */}
+      <RotateDeviceOverlay />
+
       {/* Declare Modal */}
       {showDeclareModal && (
         <DeclareModal
@@ -266,13 +270,13 @@ export const Table: React.FC<TableProps> = ({
 
       {/* Error Toast */}
       {error && (
-        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-red-600/95 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl border border-red-400 animate-bounce">
+        <div className="fixed top-14 mobile-landscape:top-10 left-1/2 -translate-x-1/2 z-50 bg-red-600/95 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl border border-red-400 animate-bounce">
           {error}
         </div>
       )}
 
-      {/* BAND 1: Compact Single-Row Top Header Bar (44px-48px) with Integrated Media Controls */}
-      <header className="shrink-0 h-11 sm:h-12 w-full flex items-center justify-between gap-1.5 px-2 sm:px-4 bg-zinc-950/95 backdrop-blur-md border-b border-zinc-800 z-30">
+      {/* BAND 1: Compact Single-Row Top Header Bar (44px-48px desktop; 36px mobile landscape) */}
+      <header className="shrink-0 h-11 sm:h-12 mobile-landscape:h-9 w-full flex items-center justify-between gap-1.5 px-2 sm:px-4 mobile-landscape:px-2 mobile-landscape:text-xs bg-zinc-950/95 backdrop-blur-md border-b border-zinc-800 z-30">
         {/* Left: Room Code, Round & Compact WebRTC Status */}
         <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
           <div className="hidden md:flex items-center gap-1.5 bg-emerald-950/80 px-2 py-1 rounded-lg border border-emerald-600/40 shrink-0">
@@ -339,7 +343,7 @@ export const Table: React.FC<TableProps> = ({
             <span className="text-[11px] text-zinc-400 font-medium hidden md:inline">
               {gameState.status === "SHOW" ? "Show:" : "Timer:"}
             </span>
-            <div className="flex items-center gap-1 bg-zinc-900 px-2.5 py-1 rounded-full border border-zinc-700">
+            <div className="flex items-center gap-1 bg-zinc-900 px-2.5 py-1 mobile-landscape:px-2 mobile-landscape:py-0.5 rounded-full border border-zinc-700">
               <Clock className="w-3 h-3 text-amber-400" />
               <span
                 className={`text-[11px] sm:text-xs font-black font-mono leading-none ${
@@ -370,7 +374,7 @@ export const Table: React.FC<TableProps> = ({
                     ? "Unmute Mic"
                     : "Mute Mic"
                 }
-                className={`p-1.5 rounded-lg border transition ${
+                className={`p-1.5 mobile-landscape:p-1 rounded-lg border transition ${
                   micPermissionDenied
                     ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
                     : isMicMuted
@@ -397,7 +401,7 @@ export const Table: React.FC<TableProps> = ({
                     ? "Turn Camera On"
                     : "Turn Camera Off"
                 }
-                className={`p-1.5 rounded-lg border transition ${
+                className={`p-1.5 mobile-landscape:p-1 rounded-lg border transition ${
                   cameraPermissionDenied
                     ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
                     : isCameraOff
@@ -420,7 +424,7 @@ export const Table: React.FC<TableProps> = ({
               onClick={requestRetry}
               aria-label="Retry Video Connection"
               title="Retry Video Connection"
-              className="lg:hidden p-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
+              className="lg:hidden p-1.5 mobile-landscape:p-1 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
             >
               <RefreshCw className="w-3.5 h-3.5" />
             </button>
@@ -431,7 +435,7 @@ export const Table: React.FC<TableProps> = ({
             onClick={toggleCollapsed}
             aria-label={isVideoCollapsed ? "Show Player Video Tiles" : "Hide Player Video Tiles"}
             title={isVideoCollapsed ? "Expand Video Strip" : "Collapse Video Strip"}
-            className="p-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
+            className="p-1.5 mobile-landscape:p-1 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
           >
             {isVideoCollapsed ? (
               <ChevronDown className="w-3.5 h-3.5" />
@@ -447,7 +451,7 @@ export const Table: React.FC<TableProps> = ({
             onClick={toggleMuted}
             aria-label={isMuted ? "Unmute Game Audio" : "Mute Game Audio"}
             title={isMuted ? "Unmute Game Audio" : "Mute Game Audio"}
-            className={`p-1.5 rounded-lg border transition ${
+            className={`p-1.5 mobile-landscape:p-1 rounded-lg border transition ${
               isMuted
                 ? "bg-zinc-900 border-zinc-800 text-zinc-500 hover:text-zinc-300"
                 : "bg-zinc-900 border-amber-500/40 text-amber-400 hover:bg-zinc-800"
@@ -462,7 +466,7 @@ export const Table: React.FC<TableProps> = ({
 
           <button
             onClick={onExit}
-            className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-red-950 text-[11px] sm:text-xs font-semibold text-zinc-400 hover:text-red-400 border border-zinc-800 hover:border-red-600/40 transition"
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 mobile-landscape:py-1 rounded-lg bg-zinc-900 hover:bg-red-950 text-[11px] sm:text-xs font-semibold text-zinc-400 hover:text-red-400 border border-zinc-800 hover:border-red-600/40 transition"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Leave</span>
@@ -475,7 +479,9 @@ export const Table: React.FC<TableProps> = ({
         {/* BAND 2: Compact Upper Video Strip (shrink-0) */}
         <section
           className={`shrink-0 w-full z-20 ${
-            isVideoCollapsed ? "py-0" : "pt-1.5 pb-1 px-2"
+            isVideoCollapsed
+              ? "py-0"
+              : "pt-1.5 pb-1 px-2 mobile-landscape:py-0.5 mobile-landscape:px-1.5"
           }`}
         >
           <VideoErrorBoundary>
@@ -484,7 +490,7 @@ export const Table: React.FC<TableProps> = ({
         </section>
 
         {/* BAND 3: Center Table Felt (flex-1 min-h-0, Deck Piles OR Show Panel) */}
-        <section className="flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-1.5 sm:gap-2 px-2 py-1 overflow-hidden z-10">
+        <section className="flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-1.5 sm:gap-2 mobile-landscape:gap-1 px-2 py-1 mobile-landscape:py-0.5 overflow-hidden z-10">
           {isShowPhase && gameState ? (
             <div className="w-full max-w-3xl max-h-full overflow-y-auto rounded-2xl bg-zinc-950/90 backdrop-blur-md border border-amber-500/50 p-3 sm:p-4 shadow-2xl">
               {/* Show Header */}

@@ -96,16 +96,16 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
       data-group-index={groupIndex}
       onDragOver={handleGroupDragOver}
       onDrop={handleGroupDrop}
-      className={`flex flex-col items-center p-1.5 rounded-xl backdrop-blur-sm border shadow-lg transition-colors shrink-0 ${
+      className={`flex flex-col items-center p-1.5 mobile-landscape:p-1 rounded-xl mobile-landscape:rounded-lg backdrop-blur-sm border shadow-lg transition-colors shrink-0 ${
         isGroupTargeted
           ? "bg-emerald-900/50 border-amber-400 ring-2 ring-amber-400/50"
           : "bg-zinc-900/70 border-zinc-700/60"
       }`}
     >
       {/* Group Status Pill & Optional Ungroup Button */}
-      <div className="flex items-center gap-1 mb-1">
+      <div className="flex items-center gap-1 mb-1 mobile-landscape:mb-0.5">
         <span
-          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shadow-sm leading-none ${badgeConfig.color}`}
+          className={`text-[10px] font-semibold px-2 py-0.5 mobile-landscape:px-1.5 rounded-full border shadow-sm leading-none ${badgeConfig.color}`}
         >
           {badgeConfig.label}
         </span>
@@ -118,13 +118,13 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
             aria-label={`Ungroup group ${groupIndex + 1}`}
           >
             <Ungroup className="w-2.5 h-2.5" />
-            <span className="hidden sm:inline">Ungroup</span>
+            <span className="hidden sm:inline mobile-landscape:hidden">Ungroup</span>
           </button>
         )}
       </div>
 
       {/* Cards in this meld: tight responsive negative overlap with top lift room */}
-      <div className="flex items-end px-1 pt-2.5 pb-0.5">
+      <div className="flex items-end px-1 pt-2.5 pb-0.5 mobile-landscape:px-0.5 mobile-landscape:pt-2 mobile-landscape:pb-0">
         <AnimatePresence mode="popLayout">
           {cards.map((card, cardIdx) => {
             const isBeingDragged = draggingCardId === card.id;
@@ -172,7 +172,7 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
                 onTouchEnd={onTouchEndCard}
                 onTouchCancel={onTouchEndCard}
                 className={`relative z-10 hover:z-30 transition-transform touch-pan-x ${
-                  cardIdx > 0 ? "-ml-4 sm:-ml-5 xl:-ml-6" : ""
+                  cardIdx > 0 ? "-ml-4 sm:-ml-5 xl:-ml-6 mobile-landscape:-ml-3.5" : ""
                 } ${isCardDropTarget ? "pl-2 border-l-2 border-amber-400" : ""}`}
               >
                 <Card

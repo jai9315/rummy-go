@@ -43,8 +43,8 @@ export const Card: React.FC<CardProps> = ({
 }) => {
   const sizeClasses = {
     sm: "w-11 h-16 text-[11px] p-0.5 sm:p-1",
-    hand: "w-11 h-16 sm:w-14 sm:h-20 xl:w-16 xl:h-24 text-[11px] sm:text-xs xl:text-sm p-0.5 sm:p-1",
-    deck: "w-16 h-24 sm:w-20 sm:h-28 [@media(min-height:820px)]:sm:w-24 [@media(min-height:820px)]:sm:h-32 [@media(max-height:520px)]:w-14 [@media(max-height:520px)]:h-20 text-xs sm:text-sm p-1 sm:p-1.5",
+    hand: "w-11 h-16 sm:w-14 sm:h-20 xl:w-16 xl:h-24 mobile-landscape:w-11 mobile-landscape:h-16 text-[11px] sm:text-xs xl:text-sm mobile-landscape:text-[10px] p-0.5 sm:p-1 mobile-landscape:p-0.5",
+    deck: "w-16 h-24 sm:w-20 sm:h-28 [@media(min-height:820px)]:sm:w-24 [@media(min-height:820px)]:sm:h-32 mobile-landscape:w-14 mobile-landscape:h-20 text-xs sm:text-sm mobile-landscape:text-[11px] p-1 sm:p-1.5 mobile-landscape:p-0.5",
     md: "w-14 h-20 sm:w-16 sm:h-24 text-xs sm:text-sm p-1",
     lg: "w-20 h-28 sm:w-24 sm:h-36 text-base p-1.5",
   }[size];
@@ -141,9 +141,9 @@ export const Card: React.FC<CardProps> = ({
 
       {/* Wild Joker Badge Overlay */}
       {card.isWildJoker && !card.isPrintedJoker && (
-        <div className="absolute top-0 right-0 bg-amber-500 text-zinc-950 text-[7px] sm:text-[8px] font-black px-0.5 sm:px-1 rounded-bl shadow leading-tight">
-          <span className="sm:hidden">★J</span>
-          <span className="hidden sm:inline">★ JKR</span>
+        <div className="absolute top-0 right-0 bg-amber-500 text-zinc-950 text-[7px] sm:text-[8px] mobile-landscape:text-[7px] font-black px-0.5 sm:px-1 mobile-landscape:px-0.5 rounded-bl shadow leading-tight">
+          <span className="sm:hidden mobile-landscape:inline">★J</span>
+          <span className="hidden sm:inline mobile-landscape:hidden">★ JKR</span>
         </div>
       )}
 

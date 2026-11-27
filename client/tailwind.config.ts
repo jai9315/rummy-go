@@ -8,6 +8,10 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      screens: {
+        "mobile-portrait": { raw: "(orientation: portrait) and (max-width: 767px)" },
+        "mobile-landscape": { raw: "(orientation: landscape) and (max-height: 500px)" },
+      },
       colors: {
         table: {
           light: "#125434",
