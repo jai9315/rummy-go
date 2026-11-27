@@ -96,16 +96,16 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
       data-group-index={groupIndex}
       onDragOver={handleGroupDragOver}
       onDrop={handleGroupDrop}
-      className={`flex flex-col items-center p-2 rounded-xl backdrop-blur-sm border shadow-lg transition-colors ${
+      className={`flex flex-col items-center p-1.5 rounded-xl backdrop-blur-sm border shadow-lg transition-colors shrink-0 ${
         isGroupTargeted
           ? "bg-emerald-900/50 border-amber-400 ring-2 ring-amber-400/50"
-          : "bg-zinc-900/60 border-zinc-700/50"
+          : "bg-zinc-900/70 border-zinc-700/60"
       }`}
     >
       {/* Group Status Pill & Optional Ungroup Button */}
-      <div className="flex items-center gap-1.5 mb-2">
+      <div className="flex items-center gap-1 mb-1">
         <span
-          className={`text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded-full border shadow-sm ${badgeConfig.color}`}
+          className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border shadow-sm leading-none ${badgeConfig.color}`}
         >
           {badgeConfig.label}
         </span>
@@ -113,18 +113,18 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
           <button
             type="button"
             onClick={onUngroup}
-            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-300 border border-zinc-600 text-[10px] font-semibold transition"
+            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-300 border border-zinc-600 text-[10px] font-semibold leading-none transition"
             title="Ungroup cards back to hand"
             aria-label={`Ungroup group ${groupIndex + 1}`}
           >
-            <Ungroup className="w-3 h-3" />
-            <span>Ungroup</span>
+            <Ungroup className="w-2.5 h-2.5" />
+            <span className="hidden sm:inline">Ungroup</span>
           </button>
         )}
       </div>
 
-      {/* Cards in this meld with overlapping fan layout + desktop/touch DnD */}
-      <div className="flex items-center -space-x-8 sm:-space-x-10 hover:space-x-1 transition-all duration-300 px-2 py-1">
+      {/* Cards in this meld: tight responsive negative overlap with top lift room */}
+      <div className="flex items-end px-1 pt-2.5 pb-0.5">
         <AnimatePresence mode="popLayout">
           {cards.map((card, cardIdx) => {
             const isBeingDragged = draggingCardId === card.id;
@@ -172,13 +172,12 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
                 onTouchEnd={onTouchEndCard}
                 onTouchCancel={onTouchEndCard}
                 className={`relative z-10 hover:z-30 transition-transform touch-pan-x ${
-                  isCardDropTarget
-                    ? "pl-2 border-l-2 border-amber-400"
-                    : ""
-                }`}
+                  cardIdx > 0 ? "-ml-4 sm:-ml-5 xl:-ml-6" : ""
+                } ${isCardDropTarget ? "pl-2 border-l-2 border-amber-400" : ""}`}
               >
                 <Card
                   card={card}
+                  size="hand"
                   isSelected={selectedCardIds.includes(card.id)}
                   isDragging={isBeingDragged}
                   onClick={() => onCardClick(card.id)}

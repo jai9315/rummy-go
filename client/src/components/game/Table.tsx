@@ -3,11 +3,18 @@
 import confetti from "canvas-confetti";
 import {
   Award,
+  Camera,
+  CameraOff,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Copy,
   LogOut,
+  Mic,
+  MicOff,
   Play,
+  RefreshCw,
   RotateCcw,
   Send,
   Trophy,
@@ -25,6 +32,7 @@ import { ClientEvaluator } from "@/lib/clientEvaluator";
 import { soundEffects } from "@/lib/soundEffects";
 import { useAuthStore } from "@/store/useAuthStore";
 import { useGameStore } from "@/store/useGameStore";
+import { useVideoStore } from "@/store/useVideoStore";
 import { Card as CardType, MeldType } from "@/types";
 
 interface TableProps {
@@ -88,6 +96,20 @@ export const Table: React.FC<TableProps> = ({
     isMuted,
     toggleMuted,
   } = useGameStore();
+  const {
+    isMicMuted,
+    isCameraOff,
+    isVideoCollapsed,
+    micPermissionDenied,
+    cameraPermissionDenied,
+    videoStatus,
+    videoStatusLabel,
+    toggleMic,
+    toggleCamera,
+    toggleCollapsed,
+    requestRetry,
+  } = useVideoStore();
+
   const [copiedCode, setCopiedCode] = useState(false);
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const prevTurnPlayerRef = useRef<string | null>(null);
@@ -230,8 +252,10 @@ export const Table: React.FC<TableProps> = ({
     }
   }, [gameState, currentUserId, finalRankings, isMuted]);
 
+  const isVideoLive = videoStatus === "live" || videoStatus === "audio-only";
+
   return (
-    <div className="relative w-full min-h-screen flex flex-col justify-between bg-zinc-950 text-white overflow-hidden">
+    <div className="relative h-[100dvh] w-full overflow-hidden flex flex-col justify-between bg-zinc-950 text-white select-none">
       {/* Declare Modal */}
       {showDeclareModal && (
         <DeclareModal
@@ -242,51 +266,83 @@ export const Table: React.FC<TableProps> = ({
 
       {/* Error Toast */}
       {error && (
-        <div className="fixed top-16 left-1/2 -translate-x-1/2 z-50 bg-red-600/95 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl border border-red-400 animate-bounce">
+        <div className="fixed top-14 left-1/2 -translate-x-1/2 z-50 bg-red-600/95 text-white font-bold text-xs px-4 py-2 rounded-xl shadow-2xl border border-red-400 animate-bounce">
           {error}
         </div>
       )}
 
-      {/* Top Game Navigation Bar */}
-      <header className="w-full flex items-center justify-between px-4 py-2.5 bg-zinc-950/90 backdrop-blur-md border-b border-zinc-800 z-30">
-        <div className="flex items-center gap-3">
-          <div className="flex items-center gap-1.5 bg-emerald-950/80 px-2.5 py-1 rounded-lg border border-emerald-600/40">
-            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-ping" />
-            <span className="text-xs font-bold text-emerald-300">Live Table</span>
+      {/* BAND 1: Compact Single-Row Top Header Bar (44px-48px) with Integrated Media Controls */}
+      <header className="shrink-0 h-11 sm:h-12 w-full flex items-center justify-between gap-1.5 px-2 sm:px-4 bg-zinc-950/95 backdrop-blur-md border-b border-zinc-800 z-30">
+        {/* Left: Room Code, Round & Compact WebRTC Status */}
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <div className="hidden md:flex items-center gap-1.5 bg-emerald-950/80 px-2 py-1 rounded-lg border border-emerald-600/40 shrink-0">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping" />
+            <span className="text-[11px] font-bold text-emerald-300 leading-none">
+              Live Table
+            </span>
           </div>
 
-          <div className="flex items-center gap-1.5 bg-zinc-900 px-2.5 py-1 rounded-lg border border-zinc-800">
-            <span className="text-xs text-zinc-400 font-medium">Room:</span>
-            <span className="text-xs font-mono font-bold text-amber-400">{roomCode}</span>
+          <div className="flex items-center gap-1 bg-zinc-900 px-2 py-1 rounded-lg border border-zinc-800 shrink-0">
+            <span className="hidden sm:inline text-[11px] text-zinc-400 font-medium">
+              Room:
+            </span>
+            <span className="text-[11px] sm:text-xs font-mono font-bold text-amber-400 leading-none">
+              {roomCode}
+            </span>
             <button
               onClick={copyCode}
-              className="text-zinc-400 hover:text-white p-0.5 ml-1 transition"
+              className="text-zinc-400 hover:text-white p-0.5 transition"
               title="Copy Room Code"
             >
               {copiedCode ? (
-                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
               ) : (
-                <Copy className="w-3.5 h-3.5" />
+                <Copy className="w-3 h-3" />
               )}
             </button>
           </div>
 
-          <span className="hidden sm:inline text-xs font-semibold text-zinc-400">
-            Round {roundNumber}
-            {roundCount > 1 ? ` / ${roundCount}` : ""}
+          <span className="hidden sm:inline text-[11px] font-semibold text-zinc-400 whitespace-nowrap">
+            R{roundNumber}
+            {roundCount > 1 ? `/${roundCount}` : ""}
           </span>
+
+          {/* Compact WebRTC Status Pill (replaces old separate video header bar) */}
+          <div className="hidden lg:flex items-center gap-1">
+            <span
+              className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border leading-none whitespace-nowrap ${
+                videoStatus === "live"
+                  ? "bg-emerald-500/15 text-emerald-400 border-emerald-500/30"
+                  : videoStatus === "audio-only"
+                  ? "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                  : "bg-zinc-900 text-zinc-400 border-zinc-700"
+              }`}
+            >
+              {videoStatusLabel}
+            </span>
+            {videoStatus === "offline" && (
+              <button
+                type="button"
+                onClick={requestRetry}
+                className="p-1 rounded-lg bg-zinc-900 hover:bg-zinc-800 border border-zinc-700 text-zinc-300 transition"
+                title="Retry Video Connection"
+              >
+                <RefreshCw className="w-3 h-3" />
+              </button>
+            )}
+          </div>
         </div>
 
-        {/* Live Turn / Show Timer Countdown Bar */}
+        {/* Center: Live Turn / Show Timer Countdown Pill */}
         {gameState && (gameState.status === "PLAYING" || gameState.status === "SHOW") && (
-          <div className="flex items-center gap-2">
-            <span className="text-xs text-zinc-400 font-medium hidden sm:inline">
-              {gameState.status === "SHOW" ? "Show Timer:" : "Timer:"}
+          <div className="flex items-center gap-1.5 shrink-0">
+            <span className="text-[11px] text-zinc-400 font-medium hidden md:inline">
+              {gameState.status === "SHOW" ? "Show:" : "Timer:"}
             </span>
-            <div className="flex items-center gap-1.5 bg-zinc-900 px-3 py-1 rounded-full border border-zinc-700">
-              <Clock className="w-3.5 h-3.5 text-amber-400" />
+            <div className="flex items-center gap-1 bg-zinc-900 px-2.5 py-1 rounded-full border border-zinc-700">
+              <Clock className="w-3 h-3 text-amber-400" />
               <span
-                className={`text-xs font-black font-mono ${
+                className={`text-[11px] sm:text-xs font-black font-mono leading-none ${
                   displayedSeconds <= 10
                     ? "text-red-400 animate-pulse"
                     : "text-amber-400"
@@ -298,8 +354,94 @@ export const Table: React.FC<TableProps> = ({
           </div>
         )}
 
-        {/* Audio Toggle & Exit Room Control */}
-        <div className="flex items-center gap-2">
+        {/* Right: Mic, Camera, Collapse Video, Game Audio & Leave */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {isVideoLive && (
+            <>
+              <button
+                type="button"
+                onClick={toggleMic}
+                disabled={micPermissionDenied}
+                aria-label={isMicMuted ? "Unmute Microphone" : "Mute Microphone"}
+                title={
+                  micPermissionDenied
+                    ? "Microphone permission denied"
+                    : isMicMuted
+                    ? "Unmute Mic"
+                    : "Mute Mic"
+                }
+                className={`p-1.5 rounded-lg border transition ${
+                  micPermissionDenied
+                    ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
+                    : isMicMuted
+                    ? "bg-red-600/25 border-red-500/60 text-red-300 hover:bg-red-600/40"
+                    : "bg-zinc-900 border-zinc-700 text-emerald-400 hover:bg-zinc-800"
+                }`}
+              >
+                {isMicMuted || micPermissionDenied ? (
+                  <MicOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Mic className="w-3.5 h-3.5" />
+                )}
+              </button>
+
+              <button
+                type="button"
+                onClick={toggleCamera}
+                disabled={cameraPermissionDenied}
+                aria-label={isCameraOff ? "Turn Camera On" : "Turn Camera Off"}
+                title={
+                  cameraPermissionDenied
+                    ? "Camera unavailable (Audio-only mode)"
+                    : isCameraOff
+                    ? "Turn Camera On"
+                    : "Turn Camera Off"
+                }
+                className={`p-1.5 rounded-lg border transition ${
+                  cameraPermissionDenied
+                    ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
+                    : isCameraOff
+                    ? "bg-red-600/25 border-red-500/60 text-red-300 hover:bg-red-600/40"
+                    : "bg-zinc-900 border-zinc-700 text-blue-400 hover:bg-zinc-800"
+                }`}
+              >
+                {isCameraOff || cameraPermissionDenied ? (
+                  <CameraOff className="w-3.5 h-3.5" />
+                ) : (
+                  <Camera className="w-3.5 h-3.5" />
+                )}
+              </button>
+            </>
+          )}
+
+          {videoStatus === "offline" && (
+            <button
+              type="button"
+              onClick={requestRetry}
+              aria-label="Retry Video Connection"
+              title="Retry Video Connection"
+              className="lg:hidden p-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
+            >
+              <RefreshCw className="w-3.5 h-3.5" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={toggleCollapsed}
+            aria-label={isVideoCollapsed ? "Show Player Video Tiles" : "Hide Player Video Tiles"}
+            title={isVideoCollapsed ? "Expand Video Strip" : "Collapse Video Strip"}
+            className="p-1.5 rounded-lg bg-zinc-900 border border-zinc-700 text-zinc-300 hover:bg-zinc-800 transition"
+          >
+            {isVideoCollapsed ? (
+              <ChevronDown className="w-3.5 h-3.5" />
+            ) : (
+              <ChevronUp className="w-3.5 h-3.5" />
+            )}
+          </button>
+
+          <div className="h-4 w-px bg-zinc-800 mx-0.5 hidden sm:block" />
+
           <button
             type="button"
             onClick={toggleMuted}
@@ -311,12 +453,16 @@ export const Table: React.FC<TableProps> = ({
                 : "bg-zinc-900 border-amber-500/40 text-amber-400 hover:bg-zinc-800"
             }`}
           >
-            {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
+            {isMuted ? (
+              <VolumeX className="w-3.5 h-3.5" />
+            ) : (
+              <Volume2 className="w-3.5 h-3.5" />
+            )}
           </button>
 
           <button
             onClick={onExit}
-            className="flex items-center gap-1 px-3 py-1.5 rounded-lg bg-zinc-900 hover:bg-red-950 text-xs font-semibold text-zinc-400 hover:text-red-400 border border-zinc-800 hover:border-red-600/40 transition"
+            className="flex items-center gap-1 px-2 sm:px-2.5 py-1.5 rounded-lg bg-zinc-900 hover:bg-red-950 text-[11px] sm:text-xs font-semibold text-zinc-400 hover:text-red-400 border border-zinc-800 hover:border-red-600/40 transition"
           >
             <LogOut className="w-3.5 h-3.5" />
             <span className="hidden sm:inline">Leave</span>
@@ -324,30 +470,34 @@ export const Table: React.FC<TableProps> = ({
         </div>
       </header>
 
-      {/* Center Table Surface */}
-      <main className="relative flex-1 flex flex-col items-center justify-between p-2 sm:p-4 bg-felt-pattern border-y-4 border-amber-600/30 shadow-inner">
-        {/* Perimeter LiveKit Video Tiles */}
-        <div className="w-full z-20">
+      {/* MIDDLE FELT AREA (BAND 2 Video Strip + BAND 3 Center Table Felt) */}
+      <main className="relative flex-1 min-h-0 flex flex-col overflow-hidden bg-felt-pattern border-y-2 border-amber-600/30 shadow-inner">
+        {/* BAND 2: Compact Upper Video Strip (shrink-0) */}
+        <section
+          className={`shrink-0 w-full z-20 ${
+            isVideoCollapsed ? "py-0" : "pt-1.5 pb-1 px-2"
+          }`}
+        >
           <VideoErrorBoundary>
             <VideoOverlay roomCode={roomCode} />
           </VideoErrorBoundary>
-        </div>
+        </section>
 
-        {/* Center Deck Piles OR Opponent Show/Meld Submission Panel */}
-        <div className="my-auto py-2 z-10 w-full flex justify-center">
+        {/* BAND 3: Center Table Felt (flex-1 min-h-0, Deck Piles OR Show Panel) */}
+        <section className="flex-1 min-h-0 w-full flex flex-col items-center justify-center gap-1.5 sm:gap-2 px-2 py-1 overflow-hidden z-10">
           {isShowPhase && gameState ? (
-            <div className="w-full max-w-3xl rounded-2xl bg-zinc-950/90 backdrop-blur-md border border-amber-500/50 p-4 sm:p-5 shadow-2xl">
+            <div className="w-full max-w-3xl max-h-full overflow-y-auto rounded-2xl bg-zinc-950/90 backdrop-blur-md border border-amber-500/50 p-3 sm:p-4 shadow-2xl">
               {/* Show Header */}
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-4 pb-3 border-b border-zinc-800">
-                <div className="flex items-center gap-2.5">
-                  <div className="p-2 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400">
-                    <Award className="w-5 h-5" />
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-zinc-800">
+                <div className="flex items-center gap-2">
+                  <div className="p-1.5 rounded-xl bg-amber-500/20 border border-amber-500/40 text-amber-400">
+                    <Award className="w-4 h-4" />
                   </div>
                   <div>
-                    <h2 className="text-base sm:text-lg font-black text-white">
+                    <h2 className="text-sm sm:text-base font-black text-white">
                       {winnerPlayer?.username || "Winner"} Declared Rummy!
                     </h2>
-                    <p className="text-xs text-zinc-400">
+                    <p className="text-[11px] text-zinc-400">
                       {canSubmitOpponentMelds
                         ? "Group your valid sequences & sets below and submit melds to reduce your points."
                         : "Waiting for remaining opponents to submit their melds."}
@@ -355,10 +505,10 @@ export const Table: React.FC<TableProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-1.5 self-start sm:self-auto px-3 py-1.5 rounded-xl bg-amber-500/15 border border-amber-500/40">
-                  <Clock className="w-4 h-4 text-amber-400" />
+                <div className="flex items-center gap-1.5 self-start sm:self-auto px-2.5 py-1 rounded-xl bg-amber-500/15 border border-amber-500/40">
+                  <Clock className="w-3.5 h-3.5 text-amber-400" />
                   <span
-                    className={`text-sm font-black font-mono ${
+                    className={`text-xs font-black font-mono ${
                       displayedSeconds <= 10 ? "text-red-400 animate-pulse" : "text-amber-300"
                     }`}
                   >
@@ -369,18 +519,18 @@ export const Table: React.FC<TableProps> = ({
 
               {/* Winner's Declared Melds */}
               {gameState.winnerMelds && gameState.winnerMelds.length > 0 && (
-                <div className="mb-4">
-                  <div className="text-[11px] font-bold text-amber-300 uppercase tracking-wider mb-2">
+                <div className="mb-3">
+                  <div className="text-[10px] font-bold text-amber-300 uppercase tracking-wider mb-1.5">
                     Winning Hand ({winnerPlayer?.username || "Winner"})
                   </div>
-                  <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-zinc-900/80 border border-zinc-800 overflow-x-auto">
+                  <div className="flex flex-wrap items-center gap-2 p-2 rounded-xl bg-zinc-900/80 border border-zinc-800 overflow-x-auto">
                     {gameState.winnerMelds.map((meld, mIdx) => {
                       const evaluated = ClientEvaluator.evaluateMeld(meld);
                       const badge = getMeldBadgeLabel(evaluated.type);
                       return (
                         <div
                           key={mIdx}
-                          className="flex flex-col items-center gap-1.5 p-2 rounded-xl bg-zinc-950/70 border border-zinc-800"
+                          className="flex flex-col items-center gap-1 p-1.5 rounded-xl bg-zinc-950/70 border border-zinc-800"
                         >
                           <div className="flex items-center -space-x-4">
                             {meld.map((card) => (
@@ -390,7 +540,7 @@ export const Table: React.FC<TableProps> = ({
                             ))}
                           </div>
                           <span
-                            className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${badge.className}`}
+                            className={`text-[9px] font-bold px-1.5 py-0.5 rounded-full border ${badge.className}`}
                           >
                             {badge.label}
                           </span>
@@ -402,21 +552,21 @@ export const Table: React.FC<TableProps> = ({
               )}
 
               {/* Opponent Submission Status Pills */}
-              <div className="flex flex-wrap items-center gap-2 mb-4">
+              <div className="flex flex-wrap items-center gap-1.5 mb-3">
                 {activeShowOpponents.map((opp) => {
                   const done = submittedIds.has(opp.id);
                   return (
                     <span
                       key={opp.id}
-                      className={`text-[11px] font-semibold px-2.5 py-1 rounded-full border flex items-center gap-1 ${
+                      className={`text-[10px] font-semibold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
                         done
                           ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
                           : "bg-zinc-900 text-zinc-300 border-zinc-700"
                       }`}
                     >
-                      {done && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />}
+                      {done && <CheckCircle2 className="w-3 h-3 text-emerald-400" />}
                       <span>
-                        {opp.username}: {done ? "Melds Submitted" : "Arranging..."}
+                        {opp.username}: {done ? "Submitted" : "Arranging..."}
                       </span>
                     </span>
                   );
@@ -425,24 +575,24 @@ export const Table: React.FC<TableProps> = ({
 
               {/* Action Bar for Active Opponent */}
               {canSubmitOpponentMelds ? (
-                <div className="flex flex-col sm:flex-row items-center justify-between gap-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/30">
+                <div className="flex flex-col sm:flex-row items-center justify-between gap-2 p-2.5 rounded-xl bg-amber-500/10 border border-amber-500/30">
                   <div className="text-xs text-zinc-200">
-                    <span>Estimated Deadwood Score: </span>
+                    <span>Estimated Deadwood: </span>
                     <strong className="text-amber-300 font-mono text-sm">
                       {liveDeadwoodPreview ? `${liveDeadwoodPreview.points} pts` : "80 pts"}
                     </strong>
-                    <span className="text-zinc-400 ml-1">(capped at 80)</span>
+                    <span className="text-zinc-400 ml-1">(cap 80)</span>
                   </div>
                   <button
                     onClick={() => onSubmitMelds(handGroups)}
-                    className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-zinc-950 font-black text-xs uppercase tracking-wider transition shadow-lg shadow-amber-500/30 flex items-center justify-center gap-2"
+                    className="w-full sm:w-auto px-4 py-2 rounded-xl bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-zinc-950 font-black text-xs uppercase tracking-wider transition shadow-lg shadow-amber-500/30 flex items-center justify-center gap-1.5"
                   >
-                    <Send className="w-4 h-4" />
+                    <Send className="w-3.5 h-3.5" />
                     <span>Submit Melds</span>
                   </button>
                 </div>
               ) : (
-                <div className="p-3 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center text-xs text-zinc-300">
+                <div className="p-2.5 rounded-xl bg-zinc-900/90 border border-zinc-800 text-center text-xs text-zinc-300">
                   {currentUserId === gameState.winnerId
                     ? "Your winning declaration is verified! Waiting for opponents to submit their melds..."
                     : submittedIds.has(currentUserId)
@@ -454,7 +604,7 @@ export const Table: React.FC<TableProps> = ({
           ) : (
             <DeckPiles onDraw={handleDrawWithSound} />
           )}
-        </div>
+        </section>
 
         {/* Round End / Game Over Scores Overlay */}
         {(isRoundEnd || isGameOver) && gameState && (
@@ -661,8 +811,8 @@ export const Table: React.FC<TableProps> = ({
         )}
       </main>
 
-      {/* Bottom Player Hand & Toolbar */}
-      <footer className="w-full bg-zinc-950/95 backdrop-blur-md border-t border-zinc-800 z-30">
+      {/* BAND 4: Bottom Player Hand Dock (shrink-0, always 100% visible) */}
+      <footer className="shrink-0 w-full bg-zinc-950/95 backdrop-blur-md border-t border-zinc-800 z-30">
         <CardHand
           onDiscard={handleDiscardWithSound}
           onDeclare={(declareCardId) => setShowDeclareModal(true, declareCardId ?? null)}

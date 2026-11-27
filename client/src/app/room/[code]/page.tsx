@@ -380,7 +380,7 @@ export default function RoomPage() {
       gameState.status === "GAME_OVER")
   ) {
     return (
-      <>
+      <div className="h-[100dvh] w-full overflow-hidden">
         <InviteToast />
         <Table
           roomCode={roomCode}
@@ -394,7 +394,7 @@ export default function RoomPage() {
           onSort={sortHand}
           onExit={handleExitRoom}
         />
-      </>
+      </div>
     );
   }
 

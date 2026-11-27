@@ -1,5 +1,7 @@
 import { create } from "zustand";
 
+export type VideoStatus = "connecting" | "live" | "audio-only" | "offline";
+
 interface VideoStoreState {
   token: string | null;
   serverUrl: string | null;
@@ -10,6 +12,9 @@ interface VideoStoreState {
   micPermissionDenied: boolean;
   connectionError: string | null;
   activeSpeakers: string[];
+  videoStatus: VideoStatus;
+  videoStatusLabel: string;
+  retryNonce: number;
 
   setVideoCredentials: (token: string, serverUrl: string) => void;
   setMicMuted: (muted: boolean) => void;
@@ -21,6 +26,8 @@ interface VideoStoreState {
   setMicPermissionDenied: (denied: boolean) => void;
   setConnectionError: (error: string | null) => void;
   setActiveSpeakers: (speakers: string[]) => void;
+  setVideoStatus: (status: VideoStatus, label: string) => void;
+  requestRetry: () => void;
   resetVideo: () => void;
 }
 
@@ -34,6 +41,9 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
   micPermissionDenied: false,
   connectionError: null,
   activeSpeakers: [],
+  videoStatus: "connecting",
+  videoStatusLabel: "Connecting...",
+  retryNonce: 0,
 
   setVideoCredentials: (token, serverUrl) =>
     set({ token, serverUrl, connectionError: null }),
@@ -63,6 +73,19 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
       }
       return { activeSpeakers: speakers };
     }),
+  setVideoStatus: (status, label) =>
+    set((state) =>
+      state.videoStatus === status && state.videoStatusLabel === label
+        ? state
+        : { videoStatus: status, videoStatusLabel: label }
+    ),
+  requestRetry: () =>
+    set((state) => ({
+      retryNonce: state.retryNonce + 1,
+      connectionError: null,
+      videoStatus: "connecting",
+      videoStatusLabel: "Connecting...",
+    })),
   resetVideo: () =>
     set({
       token: null,
@@ -73,5 +96,7 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
       micPermissionDenied: false,
       connectionError: null,
       activeSpeakers: [],
+      videoStatus: "connecting",
+      videoStatusLabel: "Connecting...",
     }),
 }));

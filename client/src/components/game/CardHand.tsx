@@ -1,6 +1,6 @@
 "use client";
 
-import { Award, EyeOff, GripHorizontal, Layers, Plus, RefreshCw } from "lucide-react";
+import { Award, EyeOff, Layers, Plus, RefreshCw } from "lucide-react";
 import React, { useCallback, useRef, useState } from "react";
 import { DropTargetInfo, MeldGroupView } from "@/components/game/MeldGroup";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -182,7 +182,7 @@ export const CardHand: React.FC<CardHandProps> = ({
     draggingCardId !== null && dropTarget?.groupIndex === newGroupTargetIndex;
 
   return (
-    <div className="w-full flex flex-col items-center gap-3 px-2 sm:px-6 pb-4">
+    <div className="w-full flex flex-col items-center gap-1 sm:gap-1.5 px-1.5 sm:px-3 pt-1.5 pb-1.5">
       {/* Touch Drag Floating Pill */}
       {touchGhostPos && draggingCardId && (
         <div
@@ -196,86 +196,89 @@ export const CardHand: React.FC<CardHandProps> = ({
         </div>
       )}
 
-      {/* Action Controls Bar */}
-      <div className="flex flex-wrap items-center justify-center gap-2 bg-zinc-950/80 backdrop-blur-md px-4 py-2 rounded-2xl border border-amber-500/30 shadow-2xl">
-        {/* Sort Buttons */}
+      {/* Compact Action Toolbar (2x3 grid on narrow phones, single tight row on sm+) */}
+      <div className="grid grid-cols-3 sm:flex sm:flex-wrap items-center justify-center gap-1 sm:gap-1.5 w-full max-w-sm sm:w-auto sm:max-w-none bg-zinc-900/90 backdrop-blur-md px-1.5 sm:px-2.5 py-1 rounded-xl border border-amber-500/25 shadow-lg">
+        {/* Sort Suit */}
         <button
           onClick={() => onSort("SUIT")}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-zinc-600 transition"
+          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
         >
-          <RefreshCw className="w-3.5 h-3.5 text-amber-400" />
-          <span>Sort Suit</span>
+          <RefreshCw className="w-3 h-3 text-amber-400 shrink-0" />
+          <span className="sm:hidden">Suit</span>
+          <span className="hidden sm:inline">Sort Suit</span>
         </button>
 
+        {/* Sort Rank */}
         <button
           onClick={() => onSort("RANK")}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-zinc-600 transition"
+          className="flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] sm:text-xs font-semibold text-zinc-200 border border-zinc-700 transition whitespace-nowrap"
         >
-          <RefreshCw className="w-3.5 h-3.5 text-blue-400" />
-          <span>Sort Rank</span>
+          <RefreshCw className="w-3 h-3 text-blue-400 shrink-0" />
+          <span className="sm:hidden">Rank</span>
+          <span className="hidden sm:inline">Sort Rank</span>
         </button>
 
-        {/* Group Selected Button */}
+        {/* Group Selected */}
         <button
           onClick={groupSelectedCards}
           disabled={selectedCardIds.length < 2}
-          className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-semibold transition whitespace-nowrap ${
             selectedCardIds.length >= 2
               ? "bg-amber-500 hover:bg-amber-400 text-zinc-950 font-bold shadow-md shadow-amber-500/20"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
           }`}
         >
-          <Layers className="w-3.5 h-3.5" />
+          <Layers className="w-3 h-3 shrink-0" />
           <span>Group ({selectedCardIds.length})</span>
         </button>
 
-        <div className="h-5 w-px bg-zinc-700 mx-1 hidden sm:block" />
+        <div className="h-4 w-px bg-zinc-700 mx-0.5 hidden sm:block" />
 
-        {/* Discard Button */}
+        {/* Discard */}
         <button
           onClick={handleDiscardClick}
           disabled={!isDiscardPhase || selectedCardIds.length !== 1}
-          className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition whitespace-nowrap ${
             isDiscardPhase && selectedCardIds.length === 1
-              ? "bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-600/30 animate-pulse"
+              ? "bg-red-600 hover:bg-red-500 text-white shadow-md shadow-red-600/30 animate-pulse"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
           }`}
         >
           <span>Discard</span>
         </button>
 
-        {/* Declare Button */}
+        {/* Declare */}
         <button
           onClick={handleDeclareClick}
           disabled={!isDiscardPhase}
-          className={`px-4 py-1.5 rounded-lg text-xs font-bold transition flex items-center gap-1.5 ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-3 py-1 rounded-lg text-[11px] sm:text-xs font-bold transition whitespace-nowrap ${
             isDiscardPhase
-              ? "bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-zinc-950 shadow-lg shadow-amber-500/30"
+              ? "bg-gradient-to-r from-amber-400 to-yellow-500 hover:from-amber-300 hover:to-yellow-400 text-zinc-950 shadow-md shadow-amber-500/30"
               : "bg-zinc-800/50 text-zinc-500 border border-zinc-700/50 cursor-not-allowed"
           }`}
         >
-          <Award className="w-4 h-4 text-zinc-950" />
+          <Award className="w-3.5 h-3.5 shrink-0" />
           <span>Declare</span>
         </button>
 
-        {/* Drop Button */}
+        {/* Drop */}
         <button
           onClick={onDrop}
           disabled={!isDrawPhase}
-          className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1 ${
+          className={`flex items-center justify-center gap-1 px-2 sm:px-2.5 py-1 rounded-lg text-[11px] sm:text-xs font-semibold transition whitespace-nowrap ${
             isDrawPhase
               ? "bg-zinc-800 hover:bg-red-950 text-red-400 border border-red-500/40"
               : "bg-zinc-800/40 text-zinc-600 border border-zinc-800 cursor-not-allowed"
           }`}
         >
-          <EyeOff className="w-3.5 h-3.5" />
+          <EyeOff className="w-3 h-3 shrink-0" />
           <span>Drop</span>
         </button>
       </div>
 
-      {/* Hand Melds Container (Horizontally Scrollable on Mobile) */}
-      <div className="w-full flex items-center justify-center overflow-x-auto py-2 px-1">
-        <div className="flex items-center gap-3 sm:gap-5 min-w-max">
+      {/* Hand Melds Tray (smooth horizontal touch scroll on narrow screens, centered via w-max mx-auto) */}
+      <div className="w-full overflow-x-auto overflow-y-visible">
+        <div className="flex items-end gap-2 sm:gap-3 w-max mx-auto px-1 pt-1 pb-0.5">
           {handGroups.map((group, idx) => (
             <MeldGroupView
               key={idx}
@@ -314,28 +317,20 @@ export const CardHand: React.FC<CardHandProps> = ({
                   handleDropCard(cardId, newGroupTargetIndex);
                 }
               }}
-              className={`min-w-[84px] h-28 sm:h-32 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 px-3 text-xs font-bold transition ${
+              className={`min-w-[72px] h-20 sm:h-24 xl:h-28 rounded-xl border-2 border-dashed flex flex-col items-center justify-center gap-1 px-2 text-xs font-bold transition shrink-0 ${
                 isNewGroupTargeted
                   ? "border-amber-400 bg-amber-500/20 text-amber-200 scale-105"
                   : "border-emerald-500/50 bg-emerald-950/40 text-emerald-300/80"
               }`}
             >
               <Plus className="w-4 h-4" />
-              <span className="text-[10px] uppercase tracking-wider text-center">
+              <span className="text-[10px] uppercase tracking-wider text-center leading-tight">
                 New Group
               </span>
             </div>
           )}
         </div>
       </div>
-
-      {/* Subtle Drag-and-Drop Tip */}
-      {handGroups.length > 0 && (
-        <div className="flex items-center gap-1.5 text-[10px] text-zinc-500 select-none">
-          <GripHorizontal className="w-3 h-3 text-zinc-500" />
-          <span>Drag cards to reorder or move between groups • Tap cards to select</span>
-        </div>
-      )}
     </div>
   );
 };

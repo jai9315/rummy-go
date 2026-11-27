@@ -10,15 +10,6 @@ import {
   useTracks,
 } from "@livekit/components-react";
 import { ConnectionState, MediaDeviceFailure, Track } from "livekit-client";
-import {
-  Camera,
-  CameraOff,
-  ChevronDown,
-  ChevronUp,
-  Mic,
-  MicOff,
-  RefreshCw,
-} from "lucide-react";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { VideoTile } from "@/components/video/VideoTile";
 import { api } from "@/lib/api";
@@ -32,7 +23,6 @@ interface VideoOverlayProps {
 
 interface VideoFallbackGridProps {
   statusLabel?: string;
-  onRetry?: () => void;
 }
 
 function isPermissionOrDeviceError(err: unknown): boolean {
@@ -50,84 +40,42 @@ function isPermissionOrDeviceError(err: unknown): boolean {
 }
 
 /**
- * Fallback player grid rendered while the LiveKit token is loading, when
+ * Fallback player strip rendered while the LiveKit token is loading, when
  * permissions are declined, or when LiveKit is unavailable/offline.
  * Uses ZERO LiveKit hooks so gameplay can never crash.
  */
-export const VideoFallbackGrid: React.FC<VideoFallbackGridProps> = ({
-  statusLabel = "Audio/Video Offline",
-  onRetry,
-}) => {
+export const VideoFallbackGrid: React.FC<VideoFallbackGridProps> = () => {
   const user = useAuthStore((s) => s.user);
   const gameState = useGameStore((s) => s.gameState);
-  const { isVideoCollapsed, toggleCollapsed } = useVideoStore();
+  const isVideoCollapsed = useVideoStore((s) => s.isVideoCollapsed);
 
-  if (!gameState) return null;
+  if (!gameState || isVideoCollapsed) return null;
 
   const otherPlayers = gameState.players.filter((p) => p.id !== user?.id);
   const selfPlayer = gameState.players.find((p) => p.id === user?.id);
 
   return (
-    <div className="w-full flex flex-col items-center">
-      {/* Fallback Video Bar Header */}
-      <div className="flex items-center justify-between w-full max-w-5xl px-4 py-1.5 mb-2 bg-zinc-950/70 backdrop-blur-md rounded-2xl border border-zinc-800 shadow-md">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-zinc-300">Table Players</span>
-          <span className="text-[10px] bg-zinc-800 text-zinc-400 font-semibold px-2 py-0.5 rounded-full border border-zinc-700">
-            {statusLabel}
-          </span>
-        </div>
+    <div className="w-full flex items-center justify-center flex-wrap gap-1.5 sm:gap-2.5 max-w-5xl mx-auto px-1">
+      {otherPlayers.map((player) => (
+        <VideoTile
+          key={player.id}
+          player={player}
+          isMuted={true}
+          isSpeaking={false}
+          cameraLabel={
+            player.connectionStatus === "CONNECTED" ? "Connected" : "Offline"
+          }
+        />
+      ))}
 
-        <div className="flex items-center gap-2">
-          {onRetry && (
-            <button
-              onClick={onRetry}
-              className="px-2 py-1 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 text-[11px] font-semibold flex items-center gap-1 transition"
-              title="Retry Video Connection"
-            >
-              <RefreshCw className="w-3 h-3" />
-              <span>Retry</span>
-            </button>
-          )}
-          <button
-            onClick={toggleCollapsed}
-            className="p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition"
-            title={isVideoCollapsed ? "Expand Player Tiles" : "Minimize Player Tiles"}
-          >
-            {isVideoCollapsed ? (
-              <ChevronDown className="w-4 h-4" />
-            ) : (
-              <ChevronUp className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Perimeter Avatar Tiles Grid */}
-      {!isVideoCollapsed && (
-        <div className="flex items-center justify-center flex-wrap gap-2.5 sm:gap-4 max-w-5xl px-2 py-1">
-          {otherPlayers.map((player) => (
-            <VideoTile
-              key={player.id}
-              player={player}
-              isMuted={true}
-              isSpeaking={false}
-              cameraLabel={
-                player.connectionStatus === "CONNECTED" ? "Connected" : "Offline"
-              }
-            />
-          ))}
-
-          {selfPlayer && (
-            <VideoTile
-              player={selfPlayer}
-              isSelf={true}
-              isMuted={true}
-              isSpeaking={false}
-              cameraLabel="Avatar Mode"
-            />
-          )}
-        </div>
+      {selfPlayer && (
+        <VideoTile
+          player={selfPlayer}
+          isSelf={true}
+          isMuted={true}
+          isSpeaking={false}
+          cameraLabel="Avatar"
+        />
       )}
     </div>
   );
@@ -138,8 +86,9 @@ interface LiveKitConnectedGridProps {
 }
 
 /**
- * Connected LiveKit participant grid. MUST ONLY be rendered inside <LiveKitRoom>.
+ * Connected LiveKit participant strip. MUST ONLY be rendered inside <LiveKitRoom>.
  * All LiveKit hooks and <RoomAudioRenderer /> live strictly inside this component.
+ * Header controls (Mic, Camera, Collapse, Status) live in Table's Top Header Bar via useVideoStore.
  */
 function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
   const user = useAuthStore((s) => s.user);
@@ -151,12 +100,10 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
     cameraPermissionDenied,
     micPermissionDenied,
     activeSpeakers,
-    toggleMic,
-    toggleCamera,
-    toggleCollapsed,
     setCameraPermissionDenied,
     setMicPermissionDenied,
     setActiveSpeakers,
+    setVideoStatus,
   } = useVideoStore();
 
   const connectionState = useConnectionState();
@@ -168,6 +115,17 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
   });
 
   const isRoomConnected = connectionState === ConnectionState.Connected;
+
+  // Publish live connection state for the compact Top Header Bar badge
+  useEffect(() => {
+    if (!isRoomConnected) {
+      setVideoStatus("connecting", "Connecting...");
+    } else if (audioOnlyMode || cameraPermissionDenied) {
+      setVideoStatus("audio-only", "Audio Only");
+    } else {
+      setVideoStatus("live", "WebRTC Live");
+    }
+  }, [isRoomConnected, audioOnlyMode, cameraPermissionDenied, setVideoStatus]);
 
   // Sync active speaker identities into video store
   useEffect(() => {
@@ -221,94 +179,8 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
 
   return (
     <div className="w-full flex flex-col items-center">
-      {/* Video Bar Header & Controls */}
-      <div className="flex items-center justify-between w-full max-w-5xl px-4 py-1.5 mb-2 bg-zinc-950/70 backdrop-blur-md rounded-2xl border border-zinc-800 shadow-md">
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-bold text-zinc-300">Live Video Table</span>
-          {!isRoomConnected ? (
-            <span className="text-[10px] bg-zinc-800 text-zinc-300 font-semibold px-2 py-0.5 rounded-full border border-zinc-700">
-              Connecting...
-            </span>
-          ) : audioOnlyMode || cameraPermissionDenied ? (
-            <span className="text-[10px] bg-amber-500/20 text-amber-300 font-semibold px-2 py-0.5 rounded-full border border-amber-500/30">
-              Audio Only
-            </span>
-          ) : (
-            <span className="text-[10px] bg-emerald-500/20 text-emerald-400 font-semibold px-2 py-0.5 rounded-full border border-emerald-500/30">
-              WebRTC Live
-            </span>
-          )}
-        </div>
-
-        {/* Media Controls */}
-        <div className="flex items-center gap-2">
-          <button
-            onClick={toggleMic}
-            disabled={micPermissionDenied}
-            className={`p-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition ${
-              micPermissionDenied
-                ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
-                : isMicMuted
-                ? "bg-red-600/30 border-red-500/60 text-red-300 hover:bg-red-600/40"
-                : "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700"
-            }`}
-            title={
-              micPermissionDenied
-                ? "Microphone permission denied"
-                : isMicMuted
-                ? "Unmute Mic"
-                : "Mute Mic"
-            }
-          >
-            {isMicMuted || micPermissionDenied ? (
-              <MicOff className="w-4 h-4 text-red-400" />
-            ) : (
-              <Mic className="w-4 h-4 text-emerald-400" />
-            )}
-          </button>
-
-          <button
-            onClick={toggleCamera}
-            disabled={cameraPermissionDenied}
-            className={`p-1.5 rounded-xl border text-xs font-semibold flex items-center gap-1 transition ${
-              cameraPermissionDenied
-                ? "bg-zinc-900 border-zinc-800 text-zinc-600 cursor-not-allowed"
-                : isCameraOff
-                ? "bg-red-600/30 border-red-500/60 text-red-300 hover:bg-red-600/40"
-                : "bg-zinc-800 border-zinc-700 text-zinc-200 hover:bg-zinc-700"
-            }`}
-            title={
-              cameraPermissionDenied
-                ? "Camera unavailable (Audio-only mode)"
-                : isCameraOff
-                ? "Turn Camera On"
-                : "Turn Camera Off"
-            }
-          >
-            {isCameraOff || cameraPermissionDenied ? (
-              <CameraOff className="w-4 h-4 text-red-400" />
-            ) : (
-              <Camera className="w-4 h-4 text-blue-400" />
-            )}
-          </button>
-
-          <button
-            onClick={toggleCollapsed}
-            className="p-1.5 rounded-xl bg-zinc-800 border border-zinc-700 text-zinc-300 hover:bg-zinc-700 transition"
-            title={isVideoCollapsed ? "Expand Video Tiles" : "Minimize Video Tiles"}
-          >
-            {isVideoCollapsed ? (
-              <ChevronDown className="w-4 h-4" />
-            ) : (
-              <ChevronUp className="w-4 h-4" />
-            )}
-          </button>
-        </div>
-      </div>
-
-      {/* Perimeter Video Tiles Grid */}
       {!isVideoCollapsed && (
-        <div className="flex items-center justify-center flex-wrap gap-2.5 sm:gap-4 max-w-5xl px-2 py-1">
+        <div className="w-full flex items-center justify-center flex-wrap gap-1.5 sm:gap-2.5 max-w-5xl mx-auto px-1">
           {/* Other players video tiles */}
           {otherPlayers.map((player) => {
             const remoteParticipant = participants.find(
@@ -318,7 +190,8 @@ function LiveKitConnectedGrid({ audioOnlyMode }: LiveKitConnectedGridProps) {
               (t) =>
                 t.participant.identity === player.id &&
                 t.source === Track.Source.Camera &&
-                !t.publication?.isMuted
+                !t.publication?.isMuted &&
+                Boolean(t.publication?.track)
             );
             const micTrackRef = trackReferences.find(
               (t) =>
@@ -372,24 +245,25 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
   const [serverUrl, setServerUrl] = useState<string | null>(null);
   const [isLoadingToken, setIsLoadingToken] = useState<boolean>(true);
   const [fallbackReason, setFallbackReason] = useState<string | null>(null);
-  const [retryCounter, setRetryCounter] = useState<number>(0);
 
   const {
-    isCameraOff,
-    isMicMuted,
     cameraPermissionDenied,
-    micPermissionDenied,
+    retryNonce,
     setVideoCredentials,
     setCameraPermissionDenied,
     setMicPermissionDenied,
     setConnectionError,
+    setVideoStatus,
     resetVideo,
   } = useVideoStore();
 
   useEffect(() => {
     let mounted = true;
+    setToken(null);
+    setServerUrl(null);
     setIsLoadingToken(true);
     setFallbackReason(null);
+    setVideoStatus("connecting", "Connecting...");
 
     api
       .getLiveKitToken(roomCode)
@@ -397,8 +271,9 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
         if (!mounted) return;
         if (data?.token && data?.serverUrl) {
           if (data.serverUrl.includes("your-livekit-server.example.com")) {
-            setFallbackReason("Configure LIVEKIT_URL in .env");
+            setFallbackReason("Configure LIVEKIT_URL");
             setConnectionError("Placeholder LiveKit URL detected in .env");
+            setVideoStatus("offline", "Configure LiveKit");
             return;
           }
           setToken(data.token);
@@ -407,6 +282,7 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
           setFallbackReason(null);
         } else {
           setFallbackReason("Video Unavailable");
+          setVideoStatus("offline", "Video Offline");
         }
       })
       .catch((err: unknown) => {
@@ -418,6 +294,7 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
         setConnectionError(
           err instanceof Error ? err.message : "LiveKit unavailable"
         );
+        setVideoStatus("offline", "Video Offline");
       })
       .finally(() => {
         if (mounted) {
@@ -428,7 +305,7 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
     return () => {
       mounted = false;
     };
-  }, [roomCode, retryCounter, setVideoCredentials, setConnectionError]);
+  }, [roomCode, retryNonce, setVideoCredentials, setConnectionError, setVideoStatus]);
 
   // Reset store credentials cleanly on unmount
   useEffect(() => {
@@ -437,19 +314,10 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
     };
   }, [resetVideo]);
 
-  const handleRetry = useCallback(() => {
-    setToken(null);
-    setServerUrl(null);
-    setFallbackReason(null);
-    setConnectionError(null);
-    setRetryCounter((c) => c + 1);
-  }, [setConnectionError]);
-
   const handleMediaDeviceFailure = useCallback(
     (failure?: MediaDeviceFailure, kind?: MediaDeviceKind) => {
       console.warn("LiveKit media device failure:", failure, kind);
       if (kind === "videoinput") {
-        // Fall back gracefully to audio-only without blocking gameplay
         setCameraPermissionDenied(true);
         return;
       }
@@ -457,12 +325,7 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
         setMicPermissionDenied(true);
         return;
       }
-      // Generic media failure: disable camera first so audio-only remains possible
-      if (failure === MediaDeviceFailure.PermissionDenied) {
-        setCameraPermissionDenied(true);
-      } else {
-        setCameraPermissionDenied(true);
-      }
+      setCameraPermissionDenied(true);
     },
     [setCameraPermissionDenied, setMicPermissionDenied]
   );
@@ -471,15 +334,14 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
     (err: Error) => {
       console.warn("LiveKit room error:", err);
       if (isPermissionOrDeviceError(err)) {
-        // Camera/mic permission issue — fall back to audio-only, do not crash
         setCameraPermissionDenied(true);
         return;
       }
-      // LiveKit server unreachable / disconnected -> fall back cleanly to avatar grid
       setConnectionError(err.message);
       setFallbackReason("Video Unavailable");
+      setVideoStatus("offline", "Video Offline");
     },
-    [setCameraPermissionDenied, setConnectionError]
+    [setCameraPermissionDenied, setConnectionError, setVideoStatus]
   );
 
   // If LiveKit token & serverUrl exist and connection hasn't failed, render LiveKitRoom.
@@ -506,9 +368,8 @@ export const VideoOverlay: React.FC<VideoOverlayProps> = ({ roomCode }) => {
   return (
     <VideoFallbackGrid
       statusLabel={
-        isLoadingToken ? "Connecting Video..." : fallbackReason || "Video Offline"
+        isLoadingToken ? "Connecting..." : fallbackReason || "Video Offline"
       }
-      onRetry={!isLoadingToken ? handleRetry : undefined}
     />
   );
 };
