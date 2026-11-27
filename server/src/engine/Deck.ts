@@ -127,6 +127,14 @@ export class Deck {
     return this.cards.pop();
   }
 
+  public getRemainingCards(): Card[] {
+    return this.cards;
+  }
+
+  public pushCards(cards: Card[]): void {
+    this.cards.push(...cards);
+  }
+
   public get count(): number {
     return this.cards.length;
   }

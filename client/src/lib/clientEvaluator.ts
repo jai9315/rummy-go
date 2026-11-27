@@ -22,6 +22,57 @@ export class ClientEvaluator {
     return card.isPrintedJoker || card.isWildJoker;
   }
 
+  public static getCardPoints(card: Card): number {
+    if (this.isJoker(card)) return 0;
+    if (["A", "K", "Q", "J"].includes(card.rank)) return 10;
+    const num = parseInt(card.rank, 10);
+    return isNaN(num) ? 10 : num;
+  }
+
+  public static calculatePlayerScore(melds: Card[][]): {
+    points: number;
+    evaluatedMelds: MeldGroup[];
+  } {
+    const evaluatedMelds = melds.map((m) => this.evaluateMeld(m));
+    const pureCount = evaluatedMelds.filter((m) => m.type === "PURE_SEQUENCE").length;
+    const impureCount = evaluatedMelds.filter((m) => m.type === "IMPURE_SEQUENCE").length;
+    const totalSequences = pureCount + impureCount;
+
+    let points = 0;
+
+    if (pureCount === 0) {
+      for (const meld of evaluatedMelds) {
+        for (const card of meld.cards) {
+          points += this.getCardPoints(card);
+        }
+      }
+    } else if (totalSequences < 2) {
+      let firstPureConsumed = false;
+      for (const meld of evaluatedMelds) {
+        if (!firstPureConsumed && meld.type === "PURE_SEQUENCE") {
+          firstPureConsumed = true;
+          continue;
+        }
+        for (const card of meld.cards) {
+          points += this.getCardPoints(card);
+        }
+      }
+    } else {
+      for (const meld of evaluatedMelds) {
+        if (!meld.isValid) {
+          for (const card of meld.cards) {
+            points += this.getCardPoints(card);
+          }
+        }
+      }
+    }
+
+    return {
+      points: Math.min(80, points),
+      evaluatedMelds,
+    };
+  }
+
   public static evaluateMeld(cards: Card[]): MeldGroup {
     if (!cards || cards.length < 3) {
       return {

@@ -8,6 +8,7 @@ import {
   Plus,
   Shield,
   Sparkles,
+  User as UserIcon,
   Users,
   Video,
 } from "lucide-react";
@@ -15,22 +16,32 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
+import { InviteToast } from "../components/lobby/InviteToast";
+import { useSocket } from "../hooks/useSocket";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/useAuthStore";
+import { FriendItem, MatchHistoryItem } from "../types";
 
 export default function HomePage() {
   const router = useRouter();
-  const { user, isAuthenticated, isLoading, initAuth, logout } = useAuthStore();
+  const { user, isAuthenticated, initAuth, logout } = useAuthStore();
+
+  // Keep Socket.IO connected while authenticated for live online presence & room invitations
+  useSocket(undefined, { autoJoin: false });
 
   const [joinCode, setJoinCode] = useState("");
   const [roomName, setRoomName] = useState("");
   const [maxPlayers, setMaxPlayers] = useState(6);
+  const [roundCount, setRoundCount] = useState(1);
+  const [turnTimeLimitSeconds, setTurnTimeLimitSeconds] = useState(30);
+  const [entryPoints, setEntryPoints] = useState(80);
+  const [roomPassword, setRoomPassword] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [friends, setFriends] = useState<any[]>([]);
-  const [history, setHistory] = useState<any[]>([]);
+  const [friends, setFriends] = useState<FriendItem[]>([]);
+  const [history, setHistory] = useState<MatchHistoryItem[]>([]);
 
   useEffect(() => {
     initAuth();
@@ -43,6 +54,8 @@ export default function HomePage() {
     }
   }, [isAuthenticated]);
 
+  const onlineFriendsCount = friends.filter((f) => f.isOnline).length;
+
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
     setError(null);
@@ -50,7 +63,6 @@ export default function HomePage() {
 
     try {
       if (!isAuthenticated) {
-        // Automatically guest login if not logged in
         const guestRes = await api.guestLogin({ displayName: "HostPlayer" });
         useAuthStore.getState().setUserSession(guestRes.user, guestRes.token);
       }
@@ -58,13 +70,15 @@ export default function HomePage() {
       const res = await api.createRoom({
         roomName: roomName || `${user?.username || "Player"}'s Room`,
         maxPlayers,
-        roundCount: 1,
-        entryPoints: 80,
+        roundCount,
+        entryPoints,
+        turnTimeLimitSeconds,
+        password: roomPassword.trim() || undefined,
       });
 
       router.push(`/room/${res.room.roomCode}`);
-    } catch (err: any) {
-      setError(err.message || "Failed to create room");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Failed to create room");
     } finally {
       setActionLoading(false);
     }
@@ -89,8 +103,8 @@ export default function HomePage() {
         maxPlayers: 2,
       });
       router.push(`/room/${res.room.roomCode}`);
-    } catch (err: any) {
-      setError(err.message || "Quick Play failed");
+    } catch (err: unknown) {
+      setError(err instanceof Error ? err.message : "Quick Play failed");
     } finally {
       setActionLoading(false);
     }
@@ -98,6 +112,8 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-950 via-zinc-950 to-black text-white flex flex-col">
+      <InviteToast />
+
       {/* Top Header */}
       <header className="w-full flex items-center justify-between px-6 py-4 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800">
         <div className="flex items-center gap-2">
@@ -111,13 +127,37 @@ export default function HomePage() {
         </div>
 
         {/* User Profile Bar */}
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-2.5 sm:gap-3">
           {isAuthenticated && user ? (
-            <div className="flex items-center gap-3">
-              <div className="flex items-center gap-2 bg-zinc-900 border border-zinc-800 rounded-xl px-3 py-1.5">
+            <div className="flex items-center gap-2 sm:gap-3">
+              <Link
+                href="/profile"
+                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 border border-amber-500/30 text-xs font-bold transition"
+                title="View Profile & Friends"
+              >
+                <UserIcon className="w-3.5 h-3.5" />
+                <span className="hidden sm:inline">Profile & Friends</span>
+                <span className="sm:hidden">Profile</span>
+                {onlineFriendsCount > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
+                    {onlineFriendsCount}
+                  </span>
+                )}
+              </Link>
+
+              <Link
+                href="/profile"
+                className="flex items-center gap-2 bg-zinc-900 hover:bg-zinc-800/90 border border-zinc-800 hover:border-amber-500/40 rounded-xl px-3 py-1.5 transition"
+                title="Open Profile"
+              >
                 <div className="relative w-7 h-7 rounded-full overflow-hidden border border-amber-400">
                   <Image
-                    src={user.profileImage || `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`}
+                    src={
+                      user.profileImage ||
+                      `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
+                        user.username
+                      )}`
+                    }
                     alt={user.username}
                     fill
                     className="object-cover"
@@ -129,12 +169,13 @@ export default function HomePage() {
                     {user.isGuest ? "Guest User" : "Member"}
                   </span>
                 </div>
-              </div>
+              </Link>
 
               <button
                 onClick={logout}
                 className="p-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-400 hover:text-red-400 border border-zinc-800 transition"
                 title="Log Out"
+                aria-label="Log Out"
               >
                 <LogOut className="w-4 h-4" />
               </button>
@@ -299,9 +340,9 @@ export default function HomePage() {
               <span>Recent Match History</span>
             </div>
             <div className="space-y-2">
-              {history.map((h, i) => (
+              {history.map((h) => (
                 <div
-                  key={i}
+                  key={h.id}
                   className="flex items-center justify-between p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-xs"
                 >
                   <span className="text-white font-medium">
@@ -324,8 +365,8 @@ export default function HomePage() {
 
       {/* Create Room Modal */}
       {showCreateModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-amber-500/40 p-6 shadow-2xl">
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 overflow-y-auto">
+          <div className="w-full max-w-md rounded-2xl bg-zinc-900 border border-amber-500/40 p-6 shadow-2xl my-auto">
             <h2 className="text-lg font-black text-white mb-1">Create Private Rummy Room</h2>
             <p className="text-xs text-zinc-400 mb-4">
               Configure your table. An invitation code and share link will be generated.
@@ -367,22 +408,103 @@ export default function HomePage() {
                 </div>
               </div>
 
+              <div>
+                <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider mb-1">
+                  Rounds
+                </label>
+                <div className="grid grid-cols-4 gap-2">
+                  {[1, 2, 3, 5].map((num) => (
+                    <button
+                      key={num}
+                      type="button"
+                      onClick={() => setRoundCount(num)}
+                      className={`py-2 rounded-xl text-xs font-bold border transition ${
+                        roundCount === num
+                          ? "bg-amber-500 text-zinc-950 border-amber-400 shadow"
+                          : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-white"
+                      }`}
+                    >
+                      {num} {num === 1 ? "Round" : "Rounds"}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider mb-1">
+                    Turn Timer
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[20, 30, 45, 60].map((sec) => (
+                      <button
+                        key={sec}
+                        type="button"
+                        onClick={() => setTurnTimeLimitSeconds(sec)}
+                        className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                          turnTimeLimitSeconds === sec
+                            ? "bg-amber-500 text-zinc-950 border-amber-400 shadow"
+                            : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-white"
+                        }`}
+                      >
+                        {sec}s
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider mb-1">
+                    Entry Points
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {[80, 100, 160, 200].map((pts) => (
+                      <button
+                        key={pts}
+                        type="button"
+                        onClick={() => setEntryPoints(pts)}
+                        className={`py-1.5 rounded-xl text-xs font-bold border transition ${
+                          entryPoints === pts
+                            ? "bg-amber-500 text-zinc-950 border-amber-400 shadow"
+                            : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-white"
+                        }`}
+                      >
+                        {pts} pts
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider mb-1">
+                  Room Password (Optional)
+                </label>
+                <input
+                  type="password"
+                  placeholder="Leave blank for open invite link"
+                  value={roomPassword}
+                  onChange={(e) => setRoomPassword(e.target.value)}
+                  className="w-full bg-zinc-950 border border-zinc-800 rounded-xl px-4 py-2 text-sm text-white placeholder-zinc-600 focus:outline-none focus:border-amber-400"
+                />
+              </div>
+
               <div className="p-3 rounded-xl bg-zinc-950 border border-zinc-800 text-[11px] text-zinc-400 space-y-1">
                 <div className="flex justify-between">
                   <span>Game Type:</span>
                   <strong className="text-white">13-Card Points Rummy</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span>Penalty Cap:</span>
-                  <strong className="text-white">80 Points Maximum</strong>
+                  <span>Turn Time Limit:</span>
+                  <strong className="text-amber-300">{turnTimeLimitSeconds} Seconds</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span>First Drop:</span>
-                  <strong className="text-white">20 Points</strong>
+                  <span>Entry Points / Stake:</span>
+                  <strong className="text-amber-300">{entryPoints} Points</strong>
                 </div>
                 <div className="flex justify-between">
-                  <span>Middle Drop:</span>
-                  <strong className="text-white">40 Points</strong>
+                  <span>Drops:</span>
+                  <strong className="text-white">First 20 pts • Middle 40 pts</strong>
                 </div>
               </div>
 

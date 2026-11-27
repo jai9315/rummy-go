@@ -1,5 +1,6 @@
 "use client";
 
+import { motion } from "framer-motion";
 import React from "react";
 import { Card as CardType, Suit } from "../../types";
 
@@ -7,6 +8,7 @@ interface CardProps {
   card?: CardType;
   faceDown?: boolean;
   isSelected?: boolean;
+  isDragging?: boolean;
   onClick?: () => void;
   size?: "sm" | "md" | "lg";
   className?: string;
@@ -33,6 +35,7 @@ export const Card: React.FC<CardProps> = ({
   card,
   faceDown = false,
   isSelected = false,
+  isDragging = false,
   onClick,
   size = "md",
   className = "",
@@ -47,30 +50,47 @@ export const Card: React.FC<CardProps> = ({
   // Card Back Representation (for faceDown or opponents' cards)
   if (faceDown || !card) {
     return (
-      <div
+      <motion.div
+        whileHover={!disabled ? { y: -4 } : undefined}
+        whileTap={!disabled ? { scale: 0.96 } : undefined}
+        transition={{ type: "spring", stiffness: 420, damping: 28 }}
         onClick={!disabled ? onClick : undefined}
-        className={`${sizeClasses} ${className} relative rounded-lg border-2 border-amber-600/40 bg-gradient-to-br from-red-900 via-red-950 to-zinc-950 shadow-md flex items-center justify-center cursor-pointer select-none overflow-hidden transition-transform duration-200 hover:-translate-y-1`}
+        className={`${sizeClasses} ${className} relative rounded-lg border-2 border-amber-600/40 bg-gradient-to-br from-red-900 via-red-950 to-zinc-950 shadow-md flex items-center justify-center cursor-pointer select-none overflow-hidden`}
       >
         <div className="absolute inset-1 rounded border border-amber-400/30 flex items-center justify-center bg-[radial-gradient(#d97706_1px,transparent_1px)] [background-size:8px_8px]">
           <span className="text-amber-400/80 font-bold text-xs tracking-wider">RUMMY</span>
         </div>
-      </div>
+      </motion.div>
     );
   }
 
-  const isRed = card.suit === "HEARTS" || card.suit === "DIAMONDS";
   const suitSymbol = SUIT_SYMBOLS[card.suit];
   const suitColor = SUIT_COLORS[card.suit];
 
   return (
-    <div
+    <motion.div
+      layout
+      initial={{ opacity: 0, y: -14, scale: 0.94 }}
+      animate={{
+        opacity: isDragging ? 0.55 : 1,
+        y: isSelected ? -12 : 0,
+        scale: isDragging ? 1.05 : 1,
+      }}
+      exit={{ opacity: 0, y: -18, scale: 0.9 }}
+      whileHover={!disabled && !isSelected ? { y: -6 } : undefined}
+      transition={{ type: "spring", stiffness: 420, damping: 28 }}
       onClick={!disabled ? onClick : undefined}
       className={`
         ${sizeClasses}
         ${className}
         relative rounded-lg bg-gradient-to-b from-white to-zinc-100 shadow-lg select-none cursor-pointer
-        border transition-all duration-200
-        ${isSelected ? "border-amber-400 ring-4 ring-amber-400/60 -translate-y-3 z-20 shadow-amber-500/20 shadow-xl" : "border-zinc-300 hover:-translate-y-1.5 hover:shadow-xl"}
+        border transition-shadow duration-200
+        ${
+          isSelected
+            ? "border-amber-400 ring-4 ring-amber-400/60 z-20 shadow-amber-500/20 shadow-xl"
+            : "border-zinc-300 hover:shadow-xl"
+        }
+        ${isDragging ? "ring-2 ring-emerald-400 border-emerald-400" : ""}
         ${disabled ? "opacity-60 cursor-not-allowed" : ""}
         overflow-hidden flex flex-col justify-between p-1 sm:p-1.5
       `}
@@ -101,10 +121,12 @@ export const Card: React.FC<CardProps> = ({
       )}
 
       {/* Bottom Right Inverted Rank & Suit */}
-      <div className={`flex flex-col items-center leading-none ${suitColor} font-bold rotate-180 self-end`}>
+      <div
+        className={`flex flex-col items-center leading-none ${suitColor} font-bold rotate-180 self-end`}
+      >
         <span>{card.isPrintedJoker ? "JKR" : card.rank}</span>
         <span className="text-base sm:text-lg leading-none">{suitSymbol}</span>
       </div>
-    </div>
+    </motion.div>
   );
 };

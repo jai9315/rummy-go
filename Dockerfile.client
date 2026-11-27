@@ -1,26 +1,33 @@
 # Production Dockerfile for Rummy Next.js Frontend
-FROM node:20-alpine AS builder
+FROM node:22-alpine AS builder
 
 WORKDIR /app
 
 COPY package*.json ./
+RUN npm ci
+
 COPY client ./client
 
-RUN npm install
+ARG NEXT_PUBLIC_SERVER_URL=http://localhost:4000
+ENV NEXT_PUBLIC_SERVER_URL=$NEXT_PUBLIC_SERVER_URL
+
 RUN npm run build:client
 
 # Runner stage
-FROM node:20-alpine AS runner
+FROM node:22-alpine AS runner
 
 WORKDIR /app
 
 ENV NODE_ENV=production
 ENV PORT=3000
+ENV HOSTNAME=0.0.0.0
 
-COPY --from=builder /app/package*.json ./
-COPY --from=builder /app/client ./client
-COPY --from=builder /app/node_modules ./node_modules
+COPY package*.json ./
+RUN npm ci --omit=dev
+
+COPY --from=builder /app/client/.next ./client/.next
+COPY --from=builder /app/client/next.config.mjs ./client/next.config.mjs
 
 EXPOSE 3000
 
-CMD ["npx", "next", "start", "client", "-p", "3000"]
+CMD ["npx", "next", "start", "client", "-p", "3000", "-H", "0.0.0.0"]

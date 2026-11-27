@@ -4,7 +4,9 @@ import {
   Card,
   GameStatus,
   PlayerPublicInfo,
+  PlayerRanking,
   PublicGameState,
+  Rank,
   TurnPhase,
 } from "./types";
 
@@ -26,6 +28,7 @@ export interface PlayerInternalState {
 
 export interface GameOptions {
   turnTimeLimitSeconds?: number;
+  showTimeLimitSeconds?: number;
   entryPoints?: number;
   roundCount?: number;
   onStateUpdate?: (state: PublicGameState) => void;
@@ -37,7 +40,9 @@ export class Game {
   public readonly id: string;
   public readonly roomId: string;
   public readonly roomCode: string;
+  public readonly roundCount: number;
   public roundNumber: number = 1;
+  public currentRoundGameId: string;
   public status: GameStatus = "WAITING";
 
   private players: Map<string, PlayerInternalState> = new Map();
@@ -48,11 +53,20 @@ export class Game {
   private deck: Deck = new Deck();
   private discardPile: Card[] = [];
   private wildJoker!: Card;
+  private wildRank: Rank = "A";
 
   private timerInterval: NodeJS.Timeout | null = null;
   private turnTimeLimit: number;
+  private showTimeLimit: number;
   private turnTimeRemaining: number;
+  private turnEndsAt: number | null = null;
+  private showEndsAt: number | null = null;
+
+  private winnerId?: string;
+  private winnerMelds?: Card[][];
+  private submittedMeldPlayerIds: Set<string> = new Set();
   private roundScores: Record<string, { points: number; totalScore: number; reason: string }> = {};
+  private roundDropRecords: Map<string, { points: number; reason: string }> = new Map();
 
   private onStateUpdate?: (state: PublicGameState) => void;
   private onPrivateUpdate?: (playerId: string, cards: Card[]) => void;
@@ -65,9 +79,12 @@ export class Game {
     options: GameOptions = {}
   ) {
     this.id = id;
+    this.currentRoundGameId = id;
     this.roomId = roomId;
     this.roomCode = roomCode;
+    this.roundCount = Math.max(1, options.roundCount ?? 1);
     this.turnTimeLimit = options.turnTimeLimitSeconds || 30;
+    this.showTimeLimit = options.showTimeLimitSeconds || 30;
     this.turnTimeRemaining = this.turnTimeLimit;
     this.onStateUpdate = options.onStateUpdate;
     this.onPrivateUpdate = options.onPrivateUpdate;
@@ -133,52 +150,64 @@ export class Game {
   }
 
   /**
-   * Starts a new round
+   * Starts a new round (preserves cumulative totalScore across rounds)
    */
   public startRound(): void {
     if (this.players.size < 2) {
       throw new Error("Need at least 2 players to start game");
     }
 
+    this.clearTimers();
     this.status = "DEALING";
+    this.winnerId = undefined;
+    this.winnerMelds = undefined;
+    this.submittedMeldPlayerIds.clear();
     this.roundScores = {};
+    this.roundDropRecords.clear();
+    this.turnEndsAt = null;
+    this.showEndsAt = null;
     this.deck.reset();
     this.deck.shuffle();
 
-    // Reset player state for round
+    // Reset per-round player state (keep cumulative totalScore intact!)
     const activePlayers = Array.from(this.players.values()).sort(
       (a, b) => a.seatNumber - b.seatNumber
     );
     this.turnOrder = activePlayers.map((p) => p.id);
 
     // Deal 13 cards to each player
-    const { hands, remainingDeck } = this.deck.deal(activePlayers.length, 13);
+    const { hands } = this.deck.deal(activePlayers.length, 13);
     for (let i = 0; i < activePlayers.length; i++) {
       activePlayers[i].hand = hands[i];
       activePlayers[i].hasDropped = false;
+      activePlayers[i].score = 0;
       activePlayers[i].consecutiveTimeouts = 0;
       activePlayers[i].hasDrawn = false;
+      activePlayers[i].melds = undefined;
     }
 
     // Cut a card from remaining deck to be Wild Joker
     const cutCard = this.deck.draw();
     if (!cutCard) throw new Error("Deck exhausted during wild joker cut");
 
-    // Mark wild jokers across all hands and deck
+    // Mark wild jokers across all hands AND all remaining closed deck cards
     const allCardsInPlay: Card[] = [];
     for (const p of activePlayers) {
       allCardsInPlay.push(...p.hand);
     }
+    allCardsInPlay.push(...this.deck.getRemainingCards());
+
     const { cutCard: markedCutCard, wildRank } = Deck.markWildJokers(
       cutCard,
       allCardsInPlay
     );
     this.wildJoker = markedCutCard;
+    this.wildRank = wildRank;
 
     // Place one initial card face up in discard pile
     const initialDiscard = this.deck.draw();
     if (!initialDiscard) throw new Error("Deck exhausted during initial discard");
-    if (initialDiscard.rank === wildRank) {
+    if (!initialDiscard.isPrintedJoker && initialDiscard.rank === this.wildRank) {
       initialDiscard.isWildJoker = true;
     }
     this.discardPile = [initialDiscard];
@@ -196,6 +225,22 @@ export class Game {
 
     this.startTurnTimer();
     this.broadcastState();
+  }
+
+  /**
+   * Advances to the next round in a multi-round game
+   */
+  public startNextRound(nextDbGameId?: string): void {
+    if (this.status !== "ROUND_END") {
+      throw new Error(`Cannot start next round in status ${this.status}`);
+    }
+    if (this.roundNumber >= this.roundCount) {
+      throw new Error("All scheduled rounds have already been completed");
+    }
+
+    this.roundNumber += 1;
+    this.currentRoundGameId = nextDbGameId || `${this.id}_r${this.roundNumber}`;
+    this.startRound();
   }
 
   /**
@@ -227,11 +272,8 @@ export class Game {
       drawnCard = this.deck.draw();
       if (!drawnCard) throw new Error("No cards available to draw");
 
-      // Check if drawn card matches wild joker rank
-      if (
-        !drawnCard.isPrintedJoker &&
-        drawnCard.rank === this.wildJoker.rank
-      ) {
+      // Mark wild joker using explicit wildRank (handles Printed Joker cut -> Ace wild)
+      if (!drawnCard.isPrintedJoker && drawnCard.rank === this.wildRank) {
         drawnCard.isWildJoker = true;
       }
     } else {
@@ -310,23 +352,41 @@ export class Game {
   }
 
   /**
+   * Sorts and persists the player's private hand order server-side.
+   */
+  public sortPlayerHand(playerId: string, by: "SUIT" | "RANK" = "SUIT"): Card[] {
+    const player = this.players.get(playerId);
+    if (!player) return [];
+    const sorted = Evaluator.sortHand(player.hand, by);
+    player.hand = sorted;
+    return [...player.hand];
+  }
+
+  /**
    * Player drops out of the round
    */
   public drop(playerId: string): { penalty: number; publicState: PublicGameState } {
     this.validateTurn(playerId, "DRAW");
     const player = this.players.get(playerId)!;
 
-    // First drop penalty = 20, Middle drop penalty = 40
-    // First drop = player drops before drawing AND no other player has dropped yet this round
-    const otherDropped = Array.from(this.players.values()).some(
-      (p) => p.id !== playerId && p.hasDropped
-    );
-    const isFirstDrop = player.hand.length === 13 && !player.hasDrawn && !otherDropped;
+    // Per-player Indian Rummy drop rules:
+    // First drop (20 pts) = player's very first turn before drawing any card.
+    // Middle drop (40 pts) = player has already drawn at least one card this round.
+    const isFirstDrop = player.hand.length === 13 && !player.hasDrawn;
     const penalty = isFirstDrop ? 20 : 40;
+    const reason = isFirstDrop ? "First Drop (20 pts)" : "Middle Drop (40 pts)";
 
     player.hasDropped = true;
     player.score += penalty;
     player.totalScore += penalty;
+    this.roundDropRecords.set(player.id, { points: penalty, reason });
+
+    const lastAction: PublicGameState["lastAction"] = {
+      playerId,
+      username: player.username,
+      type: "DROP",
+      timestamp: Date.now(),
+    };
 
     // Check if only 1 active player remains
     const remainingPlayers = Array.from(this.players.values()).filter(
@@ -334,31 +394,15 @@ export class Game {
     );
 
     if (remainingPlayers.length === 1) {
-      // Round finishes! Remaining player wins round
+      // Round finishes! Remaining player wins round; include ALL dropped players in roundScores
       const winner = remainingPlayers[0];
-      this.endRound(winner.id, {
-        [player.id]: {
-          points: penalty,
-          totalScore: player.totalScore,
-          reason: isFirstDrop ? "First Drop (20 pts)" : "Middle Drop (40 pts)",
-        },
-        [winner.id]: {
-          points: 0,
-          totalScore: winner.totalScore,
-          reason: "Winner (Opponents Dropped)",
-        },
-      });
-    } else {
-      this.advanceTurn();
+      const scores = this.buildDropEndScores(winner, "Winner (Opponents Dropped)");
+      this.endRound(winner.id, scores, lastAction);
+      return { penalty, publicState: this.getPublicState(lastAction) };
     }
 
-    const publicState = this.getPublicState({
-      playerId,
-      username: player.username,
-      type: "DROP",
-      timestamp: Date.now(),
-    });
-
+    this.advanceTurn();
+    const publicState = this.getPublicState(lastAction);
     if (this.onStateUpdate) {
       this.onStateUpdate(publicState);
     }
@@ -367,7 +411,8 @@ export class Game {
   }
 
   /**
-   * Player declares a win with 13 cards grouped into melds + 1 declare card
+   * Player declares a win with 13 cards grouped into melds + 1 declare card.
+   * On valid declaration, transitions to SHOW phase so active opponents can submit melds.
    */
   public declare(
     playerId: string,
@@ -390,10 +435,12 @@ export class Game {
     }
 
     if (allMeldCards.length !== 13) {
+      const state = this.getPublicState();
+      this.broadcastState();
       return {
         isValid: false,
         reason: "Declaration must contain exactly 13 cards",
-        publicState: this.getPublicState(),
+        publicState: state,
       };
     }
 
@@ -414,27 +461,33 @@ export class Game {
       const serverMeld: Card[] = [];
       for (const c of m) {
         if (!c || typeof c.id !== "string") {
+          const state = this.getPublicState();
+          this.broadcastState();
           return {
             isValid: false,
             reason: "Melds contain invalid or forged cards",
-            publicState: this.getPublicState(),
+            publicState: state,
           };
         }
         // Reject reuse of the same card across multiple melds
         if (usedCardIds.has(c.id)) {
+          const state = this.getPublicState();
+          this.broadcastState();
           return {
             isValid: false,
             reason: "Melds contain invalid or forged cards",
-            publicState: this.getPublicState(),
+            publicState: state,
           };
         }
         // Look up the actual card from the server-held hand
         const actualCard = handCardById.get(c.id);
         if (!actualCard) {
+          const state = this.getPublicState();
+          this.broadcastState();
           return {
             isValid: false,
             reason: "Melds contain invalid or forged cards",
-            publicState: this.getPublicState(),
+            publicState: state,
           };
         }
         usedCardIds.add(c.id);
@@ -445,47 +498,53 @@ export class Game {
 
     // 3. Run validation through Evaluator using SERVER-HELD card data only
     const validation = Evaluator.validateDeclaration(serverMelds);
+    const lastAction: PublicGameState["lastAction"] = {
+      playerId,
+      username: player.username,
+      type: "DECLARE",
+      timestamp: Date.now(),
+    };
 
     if (validation.isValid) {
-      // Valid Declaration! Winner gets 0 penalty points
+      // Valid Declaration! Discard the 14th finish card and transition into SHOW phase
+      const [declaredDiscard] = player.hand.splice(declareIdx, 1);
+      this.discardPile.push(declaredDiscard);
+      if (this.onPrivateUpdate) {
+        this.onPrivateUpdate(player.id, [...player.hand]);
+      }
+
       player.melds = serverMelds;
-      const scores: Record<string, { points: number; totalScore: number; reason: string }> = {
-        [player.id]: { points: 0, totalScore: player.totalScore, reason: "Valid Declaration (Winner)" },
-      };
+      this.winnerId = player.id;
+      this.winnerMelds = serverMelds;
+      this.submittedMeldPlayerIds.clear();
 
-      // Score all other players
-      for (const other of this.players.values()) {
-        if (other.id === player.id) continue;
-        if (other.hasDropped) continue;
-
-        // Auto calculate score based on other player's current hand
-        // Group remaining cards or deadwood
-        const otherMelds = other.melds && other.melds.length > 0 ? other.melds : [other.hand];
-        const res = Evaluator.calculatePlayerScore(otherMelds);
-        other.score += res.points;
-        other.totalScore += res.points;
-        scores[other.id] = {
-          points: res.points,
-          totalScore: other.totalScore,
-          reason: `Loss (${res.points} pts)`,
+      const activeOpponents = this.getActiveShowOpponents();
+      if (activeOpponents.length === 0) {
+        this.status = "SHOW";
+        this.finalizeShowPhase(lastAction);
+        return {
+          isValid: true,
+          publicState: this.getPublicState(lastAction),
         };
       }
 
-      this.endRound(player.id, scores);
+      this.status = "SHOW";
+      this.startShowTimer();
+      this.broadcastState(lastAction);
+
       return {
         isValid: true,
-        publicState: this.getPublicState({
-          playerId,
-          username: player.username,
-          type: "DECLARE",
-          timestamp: Date.now(),
-        }),
+        publicState: this.getPublicState(lastAction),
       };
     } else {
       // Invalid Declaration! Penalty is 80 points
       player.score += 80;
       player.totalScore += 80;
       player.hasDropped = true; // Invalid declaration drops the player
+      this.roundDropRecords.set(player.id, {
+        points: 80,
+        reason: "Invalid Declaration (80 pts)",
+      });
 
       const remainingPlayers = Array.from(this.players.values()).filter(
         (p) => !p.hasDropped
@@ -493,20 +552,211 @@ export class Game {
 
       if (remainingPlayers.length === 1) {
         const winner = remainingPlayers[0];
-        this.endRound(winner.id, {
-          [player.id]: { points: 80, totalScore: player.totalScore, reason: "Invalid Declaration (80 pts)" },
-          [winner.id]: { points: 0, totalScore: winner.totalScore, reason: "Winner" },
-        });
+        const scores = this.buildDropEndScores(winner, "Winner");
+        this.endRound(winner.id, scores, lastAction);
       } else {
         this.advanceTurn();
+        this.broadcastState(lastAction);
       }
 
       return {
         isValid: false,
         reason: validation.reason || "Invalid card combination",
-        publicState: this.getPublicState(),
+        publicState: this.getPublicState(lastAction),
       };
     }
+  }
+
+  /**
+   * Remaining active (non-dropped, non-winner) opponent submits their arranged
+   * melds during the SHOW phase. Reconstructs every card strictly by server cardId.
+   */
+  public submitMelds(
+    playerId: string,
+    melds: Card[][]
+  ): { submitted: boolean; allSubmitted: boolean; publicState: PublicGameState } {
+    if (this.status !== "SHOW") {
+      throw new Error(`Cannot submit melds when game status is ${this.status}`);
+    }
+
+    const player = this.players.get(playerId);
+    if (!player) {
+      throw new Error("Player not found in game");
+    }
+    if (playerId === this.winnerId) {
+      throw new Error("Declaring winner cannot submit opponent melds");
+    }
+    if (player.hasDropped) {
+      throw new Error("Dropped players cannot submit melds");
+    }
+    if (this.submittedMeldPlayerIds.has(playerId)) {
+      throw new Error("Melds already submitted");
+    }
+    if (!Array.isArray(melds)) {
+      throw new Error("Melds must be an array of card groups");
+    }
+
+    // Reconstruct every submitted card strictly from server-held hand by cardId
+    const handCardById = new Map<string, Card>();
+    for (const c of player.hand) {
+      handCardById.set(c.id, c);
+    }
+
+    const usedCardIds = new Set<string>();
+    const serverMelds: Card[][] = [];
+
+    for (const group of melds) {
+      if (!Array.isArray(group)) {
+        throw new Error("Each meld group must be an array of cards");
+      }
+      if (group.length === 0) continue;
+
+      const serverGroup: Card[] = [];
+      for (const c of group) {
+        if (!c || typeof c.id !== "string") {
+          throw new Error("Melds contain invalid or forged cards");
+        }
+        if (usedCardIds.has(c.id)) {
+          throw new Error("Melds contain duplicate cards");
+        }
+        const actualCard = handCardById.get(c.id);
+        if (!actualCard) {
+          throw new Error("Melds contain invalid or forged cards");
+        }
+        usedCardIds.add(c.id);
+        serverGroup.push(actualCard);
+      }
+      if (serverGroup.length > 0) {
+        serverMelds.push(serverGroup);
+      }
+    }
+
+    // Any cards in the player's server hand not included in the submitted melds
+    // are strictly counted as individual ungrouped deadwood cards.
+    for (const card of player.hand) {
+      if (!usedCardIds.has(card.id)) {
+        serverMelds.push([card]);
+      }
+    }
+
+    player.melds = serverMelds;
+    this.submittedMeldPlayerIds.add(playerId);
+
+    const lastAction: PublicGameState["lastAction"] = {
+      playerId,
+      username: player.username,
+      type: "SUBMIT_MELDS",
+      timestamp: Date.now(),
+    };
+
+    const activeOpponents = this.getActiveShowOpponents();
+    const allSubmitted = activeOpponents.every((opp) =>
+      this.submittedMeldPlayerIds.has(opp.id)
+    );
+
+    if (allSubmitted) {
+      this.finalizeShowPhase(lastAction);
+    } else {
+      this.broadcastState(lastAction);
+    }
+
+    return {
+      submitted: true,
+      allSubmitted,
+      publicState: this.getPublicState(lastAction),
+    };
+  }
+
+  /**
+   * Finalizes the SHOW phase once all active opponents submit or the show timer expires.
+   */
+  public finalizeShowPhase(lastAction?: PublicGameState["lastAction"]): void {
+    if (this.status !== "SHOW") return;
+    this.clearTimers();
+
+    const winnerId = this.winnerId;
+    const winner = winnerId ? this.players.get(winnerId) : undefined;
+    if (!winnerId || !winner) return;
+
+    const scores: Record<string, { points: number; totalScore: number; reason: string }> = {
+      [winner.id]: {
+        points: 0,
+        totalScore: winner.totalScore,
+        reason: "Valid Declaration (Winner)",
+      },
+    };
+
+    for (const other of this.players.values()) {
+      if (other.id === winner.id) continue;
+
+      if (other.hasDropped) {
+        const dropRec = this.roundDropRecords.get(other.id);
+        scores[other.id] = {
+          points: dropRec?.points ?? other.score,
+          totalScore: other.totalScore,
+          reason: dropRec?.reason ?? "Dropped",
+        };
+        continue;
+      }
+
+      const didSubmit =
+        this.submittedMeldPlayerIds.has(other.id) &&
+        Boolean(other.melds && other.melds.length > 0);
+
+      // Submitted opponents are scored on their validated melds (only invalid/ungrouped deadwood).
+      // Unsubmitted opponents are auto-scored on their ungrouped hand (capped at 80).
+      const meldsToScore = didSubmit
+        ? other.melds!
+        : other.hand.map((c) => [c]);
+
+      const res = Evaluator.calculatePlayerScore(meldsToScore);
+      other.score += res.points;
+      other.totalScore += res.points;
+      scores[other.id] = {
+        points: res.points,
+        totalScore: other.totalScore,
+        reason: didSubmit
+          ? `Melds Submitted (${res.points} pts)`
+          : `Auto-Scored Timeout (${res.points} pts)`,
+      };
+    }
+
+    this.endRound(winner.id, scores, lastAction);
+  }
+
+  private getActiveShowOpponents(): PlayerInternalState[] {
+    return Array.from(this.players.values()).filter(
+      (p) => p.id !== this.winnerId && !p.hasDropped
+    );
+  }
+
+  /**
+   * Builds a complete roundScores map containing the winner plus ALL dropped players.
+   */
+  private buildDropEndScores(
+    winner: PlayerInternalState,
+    winnerReason: string
+  ): Record<string, { points: number; totalScore: number; reason: string }> {
+    const scores: Record<string, { points: number; totalScore: number; reason: string }> = {};
+
+    for (const p of this.players.values()) {
+      if (p.id === winner.id) {
+        scores[p.id] = {
+          points: 0,
+          totalScore: p.totalScore,
+          reason: winnerReason,
+        };
+      } else {
+        const dropRec = this.roundDropRecords.get(p.id);
+        scores[p.id] = {
+          points: dropRec?.points ?? p.score,
+          totalScore: p.totalScore,
+          reason: dropRec?.reason ?? "Dropped",
+        };
+      }
+    }
+
+    return scores;
   }
 
   /**
@@ -524,9 +774,7 @@ export class Game {
     this.discardPile = [topCard];
 
     // Add back to deck and shuffle
-    for (const c of cardsToShuffle) {
-      (this.deck as any).cards.push(c);
-    }
+    this.deck.pushCards(cardsToShuffle);
     this.deck.shuffle();
   }
 
@@ -539,9 +787,7 @@ export class Game {
     if (activeIds.length <= 1) return;
 
     let nextIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
-    while (
-      this.players.get(this.turnOrder[nextIndex])?.hasDropped
-    ) {
+    while (this.players.get(this.turnOrder[nextIndex])?.hasDropped) {
       nextIndex = (nextIndex + 1) % this.turnOrder.length;
     }
 
@@ -550,21 +796,86 @@ export class Game {
     this.startTurnTimer();
   }
 
-  public stopTimer(): void {
-    this.clearTimers();
+  public isTimerRunning(): boolean {
+    return this.timerInterval !== null;
   }
 
-  private startTurnTimer(): void {
+  public stopTimer(): void {
+    if (this.turnEndsAt !== null) {
+      this.turnTimeRemaining = Math.max(
+        1,
+        Math.ceil((this.turnEndsAt - Date.now()) / 1000)
+      );
+    }
     this.clearTimers();
-    this.turnTimeRemaining = this.turnTimeLimit;
+    this.turnEndsAt = null;
+    this.showEndsAt = null;
+  }
+
+  /**
+   * Resumes a paused turn or show timer (e.g., when a player reconnects after
+   * all players had disconnected). Returns true if a timer was restarted.
+   */
+  public resumeTimer(): boolean {
+    if (this.timerInterval !== null) return false;
+
+    if (this.status === "PLAYING") {
+      const remaining =
+        this.turnTimeRemaining > 0 ? this.turnTimeRemaining : this.turnTimeLimit;
+      this.startTurnTimer(remaining);
+      return true;
+    }
+
+    if (this.status === "SHOW") {
+      const remaining =
+        this.turnTimeRemaining > 0 ? this.turnTimeRemaining : this.showTimeLimit;
+      this.startShowTimer(remaining);
+      return true;
+    }
+
+    return false;
+  }
+
+  private startTurnTimer(secondsOverride?: number): void {
+    this.clearTimers();
+    const durationSeconds =
+      secondsOverride !== undefined && secondsOverride > 0
+        ? secondsOverride
+        : this.turnTimeLimit;
+    this.turnTimeRemaining = durationSeconds;
+    const deadline = Date.now() + durationSeconds * 1000;
+    this.turnEndsAt = deadline;
+    this.showEndsAt = null;
 
     this.timerInterval = setInterval(() => {
-      this.turnTimeRemaining--;
-      if (this.turnTimeRemaining <= 0) {
+      const remainingMs = deadline - Date.now();
+      this.turnTimeRemaining = Math.max(0, Math.ceil(remainingMs / 1000));
+      if (remainingMs <= 0) {
         this.clearTimers();
+        this.turnEndsAt = null;
         this.handleTimeout();
       }
-    }, 1000);
+    }, 250);
+  }
+
+  private startShowTimer(secondsOverride?: number): void {
+    this.clearTimers();
+    const durationSeconds =
+      secondsOverride !== undefined && secondsOverride > 0
+        ? secondsOverride
+        : this.showTimeLimit;
+    this.turnTimeRemaining = durationSeconds;
+    const deadline = Date.now() + durationSeconds * 1000;
+    this.showEndsAt = deadline;
+    this.turnEndsAt = deadline;
+
+    this.timerInterval = setInterval(() => {
+      const remainingMs = deadline - Date.now();
+      this.turnTimeRemaining = Math.max(0, Math.ceil(remainingMs / 1000));
+      if (remainingMs <= 0) {
+        this.finalizeShowPhase();
+      }
+    }, 250);
   }
 
   private handleTimeout(): void {
@@ -586,7 +897,7 @@ export class Game {
       try {
         const { drawnCard } = this.drawCard(player.id, "CLOSED");
         this.discardCard(player.id, drawnCard.id);
-      } catch (err) {
+      } catch {
         this.advanceTurn();
       }
     } else {
@@ -616,16 +927,25 @@ export class Game {
 
   private endRound(
     winnerId: string,
-    scores: Record<string, { points: number; totalScore: number; reason: string }>
+    scores: Record<string, { points: number; totalScore: number; reason: string }>,
+    lastAction?: PublicGameState["lastAction"]
   ): void {
     this.clearTimers();
-    this.status = "ROUND_END";
+    this.turnEndsAt = null;
+    this.showEndsAt = null;
+    this.turnTimeRemaining = 0;
+    this.status = this.roundNumber >= this.roundCount ? "GAME_OVER" : "ROUND_END";
+    this.winnerId = winnerId;
     this.roundScores = scores;
-    this.broadcastState();
+    this.broadcastState(lastAction);
   }
 
   public getCurrentTurnPlayerId(): string {
     return this.turnOrder[this.currentTurnIndex] || "";
+  }
+
+  public getWildRank(): Rank {
+    return this.wildRank;
   }
 
   public getPlayer(playerId: string): PlayerInternalState | undefined {
@@ -634,6 +954,29 @@ export class Game {
 
   public getPlayerCards(playerId: string): Card[] {
     return this.players.get(playerId)?.hand || [];
+  }
+
+  private buildRankings(): PlayerRanking[] {
+    const sorted = Array.from(this.players.values()).sort((a, b) => {
+      if (a.totalScore !== b.totalScore) return a.totalScore - b.totalScore;
+      return a.seatNumber - b.seatNumber;
+    });
+
+    const rankings: PlayerRanking[] = [];
+    for (let i = 0; i < sorted.length; i++) {
+      const p = sorted[i];
+      const rank =
+        i > 0 && p.totalScore === sorted[i - 1].totalScore
+          ? rankings[i - 1].rank
+          : i + 1;
+      rankings.push({
+        playerId: p.id,
+        username: p.username,
+        totalScore: p.totalScore,
+        rank,
+      });
+    }
+    return rankings;
   }
 
   /**
@@ -649,7 +992,7 @@ export class Game {
         profileImage: p.profileImage,
         seatNumber: p.seatNumber,
         cardCount: p.hand.length, // Only count is public!
-        isCurrentTurn: p.id === currentId,
+        isCurrentTurn: this.status === "PLAYING" && p.id === currentId,
         isReady: p.isReady,
         connectionStatus: p.connectionStatus,
         hasDropped: p.hasDropped,
@@ -657,17 +1000,32 @@ export class Game {
       })
     );
 
+    const totalScores: Record<string, number> = {};
+    for (const p of this.players.values()) {
+      totalScores[p.id] = p.totalScore;
+    }
+
+    const computedRemainingSeconds =
+      this.turnEndsAt !== null
+        ? Math.max(0, Math.ceil((this.turnEndsAt - Date.now()) / 1000))
+        : Math.max(0, this.turnTimeRemaining);
+
     return {
-      gameId: this.id,
+      gameId: this.currentRoundGameId,
       roomId: this.roomId,
       roomCode: this.roomCode,
       status: this.status,
       roundNumber: this.roundNumber,
+      roundCount: this.roundCount,
       currentTurnPlayerId: currentId,
       turnPhase: this.turnPhase,
       turnTimeLimitSeconds: this.turnTimeLimit,
-      turnTimeRemainingSeconds: Math.max(0, this.turnTimeRemaining),
+      turnTimeRemainingSeconds: computedRemainingSeconds,
+      turnEndsAt: this.turnEndsAt,
+      showTimeLimitSeconds: this.showTimeLimit,
+      showEndsAt: this.showEndsAt,
       wildJoker: this.wildJoker,
+      wildRank: this.wildRank,
       topDiscardCard:
         this.discardPile.length > 0
           ? this.discardPile[this.discardPile.length - 1]
@@ -676,13 +1034,18 @@ export class Game {
       discardPileCount: this.discardPile.length,
       players: publicPlayers,
       lastAction,
+      winnerId: this.winnerId,
+      winnerMelds: this.winnerMelds,
+      submittedMeldPlayerIds: Array.from(this.submittedMeldPlayerIds),
       roundScores: this.roundScores,
+      totalScores,
+      rankings: this.status === "GAME_OVER" ? this.buildRankings() : undefined,
     };
   }
 
-  private broadcastState(): void {
+  private broadcastState(lastAction?: PublicGameState["lastAction"]): void {
     if (this.onStateUpdate) {
-      this.onStateUpdate(this.getPublicState());
+      this.onStateUpdate(this.getPublicState(lastAction));
     }
   }
 

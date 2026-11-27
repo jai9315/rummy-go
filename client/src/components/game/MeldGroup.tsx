@@ -1,24 +1,49 @@
 "use client";
 
+import { AnimatePresence, motion } from "framer-motion";
+import { Ungroup } from "lucide-react";
 import React from "react";
 import { ClientEvaluator } from "../../lib/clientEvaluator";
 import { Card as CardType } from "../../types";
 import { Card } from "./Card";
 
+export interface DropTargetInfo {
+  groupIndex: number;
+  cardIndex?: number;
+}
+
 interface MeldGroupProps {
   cards: CardType[];
   groupIndex: number;
   selectedCardIds: string[];
+  draggingCardId: string | null;
+  dropTarget: DropTargetInfo | null;
   onCardClick: (cardId: string) => void;
   onUngroup?: () => void;
+  onDragStartCard: (cardId: string) => void;
+  onDragEndCard: () => void;
+  onHoverDropTarget: (target: DropTargetInfo | null) => void;
+  onDropCard: (cardId: string, targetGroupIndex: number, targetCardIndex?: number) => void;
+  onTouchStartCard: (e: React.TouchEvent, cardId: string) => void;
+  onTouchMoveCard: (e: React.TouchEvent) => void;
+  onTouchEndCard: () => void;
 }
 
 export const MeldGroupView: React.FC<MeldGroupProps> = ({
   cards,
   groupIndex,
   selectedCardIds,
+  draggingCardId,
+  dropTarget,
   onCardClick,
   onUngroup,
+  onDragStartCard,
+  onDragEndCard,
+  onHoverDropTarget,
+  onDropCard,
+  onTouchStartCard,
+  onTouchMoveCard,
+  onTouchEndCard,
 }) => {
   const meld = ClientEvaluator.evaluateMeld(cards);
 
@@ -41,29 +66,128 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
     },
   }[meld.type];
 
+  const isGroupTargeted =
+    draggingCardId !== null && dropTarget?.groupIndex === groupIndex;
+
+  const handleGroupDragOver = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = "move";
+    if (
+      dropTarget?.groupIndex !== groupIndex ||
+      dropTarget?.cardIndex !== undefined
+    ) {
+      onHoverDropTarget({ groupIndex });
+    }
+  };
+
+  const handleGroupDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    const cardId = e.dataTransfer.getData("text/plain") || draggingCardId;
+    if (cardId) {
+      onDropCard(cardId, groupIndex);
+    }
+    onDragEndCard();
+  };
+
   return (
-    <div className="flex flex-col items-center p-2 rounded-xl bg-zinc-900/60 backdrop-blur-sm border border-zinc-700/50 shadow-lg transition-all">
-      {/* Group Status Pill */}
+    <motion.div
+      layout
+      transition={{ type: "spring", stiffness: 360, damping: 28 }}
+      data-group-index={groupIndex}
+      onDragOver={handleGroupDragOver}
+      onDrop={handleGroupDrop}
+      className={`flex flex-col items-center p-2 rounded-xl backdrop-blur-sm border shadow-lg transition-colors ${
+        isGroupTargeted
+          ? "bg-emerald-900/50 border-amber-400 ring-2 ring-amber-400/50"
+          : "bg-zinc-900/60 border-zinc-700/50"
+      }`}
+    >
+      {/* Group Status Pill & Optional Ungroup Button */}
       <div className="flex items-center gap-1.5 mb-2">
         <span
           className={`text-[10px] sm:text-xs font-semibold px-2 py-0.5 rounded-full border shadow-sm ${badgeConfig.color}`}
         >
           {badgeConfig.label}
         </span>
+        {onUngroup && (
+          <button
+            type="button"
+            onClick={onUngroup}
+            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-300 border border-zinc-600 text-[10px] font-semibold transition"
+            title="Ungroup cards back to hand"
+            aria-label={`Ungroup group ${groupIndex + 1}`}
+          >
+            <Ungroup className="w-3 h-3" />
+            <span>Ungroup</span>
+          </button>
+        )}
       </div>
 
-      {/* Cards in this meld with overlapping fan layout */}
+      {/* Cards in this meld with overlapping fan layout + desktop/touch DnD */}
       <div className="flex items-center -space-x-8 sm:-space-x-10 hover:space-x-1 transition-all duration-300 px-2 py-1">
-        {cards.map((card) => (
-          <div key={card.id} className="relative z-10 hover:z-30 transition-transform">
-            <Card
-              card={card}
-              isSelected={selectedCardIds.includes(card.id)}
-              onClick={() => onCardClick(card.id)}
-            />
-          </div>
-        ))}
+        <AnimatePresence mode="popLayout">
+          {cards.map((card, cardIdx) => {
+            const isBeingDragged = draggingCardId === card.id;
+            const isCardDropTarget =
+              draggingCardId !== null &&
+              draggingCardId !== card.id &&
+              dropTarget?.groupIndex === groupIndex &&
+              dropTarget?.cardIndex === cardIdx;
+
+            return (
+              <div
+                key={card.id}
+                draggable
+                data-card-id={card.id}
+                data-group-index={groupIndex}
+                data-card-index={cardIdx}
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", card.id);
+                  onDragStartCard(card.id);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  e.dataTransfer.dropEffect = "move";
+                  if (
+                    dropTarget?.groupIndex !== groupIndex ||
+                    dropTarget?.cardIndex !== cardIdx
+                  ) {
+                    onHoverDropTarget({ groupIndex, cardIndex: cardIdx });
+                  }
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  const cardId = e.dataTransfer.getData("text/plain") || draggingCardId;
+                  if (cardId) {
+                    onDropCard(cardId, groupIndex, cardIdx);
+                  }
+                  onDragEndCard();
+                }}
+                onDragEnd={onDragEndCard}
+                onTouchStart={(e) => onTouchStartCard(e, card.id)}
+                onTouchMove={onTouchMoveCard}
+                onTouchEnd={onTouchEndCard}
+                onTouchCancel={onTouchEndCard}
+                className={`relative z-10 hover:z-30 transition-transform touch-pan-x ${
+                  isCardDropTarget
+                    ? "pl-2 border-l-2 border-amber-400"
+                    : ""
+                }`}
+              >
+                <Card
+                  card={card}
+                  isSelected={selectedCardIds.includes(card.id)}
+                  isDragging={isBeingDragged}
+                  onClick={() => onCardClick(card.id)}
+                />
+              </div>
+            );
+          })}
+        </AnimatePresence>
       </div>
-    </div>
+    </motion.div>
   );
 };

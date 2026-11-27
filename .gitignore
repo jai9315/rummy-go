@@ -9,4 +9,9 @@ build/
 coverage/
 *.log
 .DS_Store
-prisma/dev.db
+*.tsbuildinfo
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+/data

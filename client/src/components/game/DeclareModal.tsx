@@ -1,7 +1,7 @@
 "use client";
 
 import { AlertCircle, Award, CheckCircle2, X } from "lucide-react";
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Card } from "@/components/game/Card";
 import { ClientEvaluator } from "@/lib/clientEvaluator";
 import { useGameStore } from "@/store/useGameStore";
@@ -16,10 +16,16 @@ export const DeclareModal: React.FC<DeclareModalProps> = ({
   onConfirmDeclare,
   onClose,
 }) => {
-  const { handGroups, privateHand, declareCardId } = useGameStore();
+  const { gameState, handGroups, privateHand, declareCardId } = useGameStore();
   const [selectedDeclareCardId, setSelectedDeclareCardId] = useState<string>(
     declareCardId || (privateHand.length === 14 ? privateHand[privateHand.length - 1].id : "")
   );
+
+  useEffect(() => {
+    if (gameState && gameState.status !== "PLAYING") {
+      onClose();
+    }
+  }, [gameState, onClose]);
 
   const declareCard = privateHand.find((c) => c.id === selectedDeclareCardId);
 

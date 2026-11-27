@@ -79,16 +79,17 @@ export class Evaluator {
 
   /**
    * Pure Sequence: 3+ consecutive cards of the same suit.
-   * NO joker substitutes allowed (cards must be natural).
+   * Printed Jokers are strictly forbidden. A Wild Joker card may be used in a
+   * pure sequence ONLY in its natural suit and natural rank (not as a substitute).
    */
   public static isValidPureSequence(cards: Card[]): boolean {
     if (cards.length < 3) return false;
 
-    // No joker (printed or wild) can be in a pure sequence.
-    // A wild joker substitute makes a sequence impure, never pure.
-    if (cards.some((c) => c.isPrintedJoker || c.isWildJoker)) return false;
+    // Printed Jokers can never appear in a pure sequence.
+    // Wild Jokers are permitted only when used in their natural suit & rank.
+    if (cards.some((c) => c.isPrintedJoker)) return false;
 
-    // All natural cards must have identical suit
+    // All cards must have identical suit
     const suit = cards[0].suit;
     if (cards.some((c) => c.suit !== suit)) return false;
 

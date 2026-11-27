@@ -51,11 +51,19 @@ export type GameStatus =
   | "WAITING"
   | "DEALING"
   | "PLAYING"
+  | "SHOW"
   | "DECLARED"
   | "ROUND_END"
   | "GAME_OVER";
 
 export type TurnPhase = "DRAW" | "DISCARD";
+
+export interface PlayerRanking {
+  playerId: string;
+  username: string;
+  totalScore: number;
+  rank: number;
+}
 
 export interface PublicGameState {
   gameId: string;
@@ -63,11 +71,16 @@ export interface PublicGameState {
   roomCode: string;
   status: GameStatus;
   roundNumber: number;
+  roundCount: number;
   currentTurnPlayerId: string;
   turnPhase: TurnPhase;
   turnTimeLimitSeconds: number;
   turnTimeRemainingSeconds: number;
+  turnEndsAt?: number | null;
+  showTimeLimitSeconds?: number;
+  showEndsAt?: number | null;
   wildJoker: Card;
+  wildRank?: Rank;
   topDiscardCard: Card | null;
   closedDeckCount: number;
   discardPileCount: number;
@@ -75,12 +88,16 @@ export interface PublicGameState {
   lastAction?: {
     playerId: string;
     username: string;
-    type: "DRAW_CLOSED" | "DRAW_OPEN" | "DISCARD" | "DROP" | "DECLARE";
+    type: "DRAW_CLOSED" | "DRAW_OPEN" | "DISCARD" | "DROP" | "DECLARE" | "SUBMIT_MELDS";
     card?: Card;
     timestamp: number;
   };
   winnerId?: string;
+  winnerMelds?: Card[][];
+  submittedMeldPlayerIds?: string[];
   roundScores?: Record<string, { points: number; totalScore: number; reason: string }>;
+  totalScores?: Record<string, number>;
+  rankings?: PlayerRanking[];
 }
 
 export interface PrivateHandUpdate {
@@ -88,5 +105,6 @@ export interface PrivateHandUpdate {
   playerId: string;
   cards: Card[];
   groups?: Card[][];
+  sortedBy?: "SUIT" | "RANK";
   timestamp: number;
 }

@@ -9,6 +9,7 @@ interface AuthState {
   isLoading: boolean;
   initAuth: () => Promise<void>;
   setUserSession: (user: User, token: string) => void;
+  updateUser: (user: User, token?: string) => void;
   logout: () => void;
 }
 
@@ -44,6 +45,16 @@ export const useAuthStore = create<AuthState>((set) => ({
       localStorage.setItem("rummy_token", token);
     }
     set({ user, token, isAuthenticated: true, isLoading: false });
+  },
+
+  updateUser: (user: User, token?: string) => {
+    if (token && typeof window !== "undefined") {
+      localStorage.setItem("rummy_token", token);
+    }
+    set((state) => ({
+      user,
+      token: token ?? state.token,
+    }));
   },
 
   logout: () => {

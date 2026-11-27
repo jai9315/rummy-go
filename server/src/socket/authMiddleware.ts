@@ -1,26 +1,30 @@
 import jwt from "jsonwebtoken";
 import { Socket } from "socket.io";
+import { config } from "../config";
 import { AuthTokenPayload } from "../routes/auth";
-
-const JWT_SECRET: string = process.env.JWT_SECRET!;
 
 export function socketAuthMiddleware(
   socket: Socket,
   next: (err?: Error) => void
 ): void {
   try {
+    const authToken = socket.handshake.auth?.token;
+    const headerAuth = socket.handshake.headers?.authorization;
     const token =
-      socket.handshake.auth?.token ||
-      socket.handshake.headers?.authorization?.split(" ")[1];
+      typeof authToken === "string"
+        ? authToken
+        : typeof headerAuth === "string"
+          ? headerAuth.split(" ")[1]
+          : undefined;
 
     if (!token) {
       return next(new Error("Authentication token required"));
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as AuthTokenPayload;
-    socket.data.user = decoded;
+    const decoded = jwt.verify(token, config.jwtSecret) as AuthTokenPayload;
+    (socket.data as { user?: AuthTokenPayload }).user = decoded;
     next();
-  } catch (error) {
+  } catch {
     next(new Error("Invalid authentication token"));
   }
 }

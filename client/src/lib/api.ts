@@ -1,4 +1,21 @@
-const SERVER_URL = process.env.NEXT_PUBLIC_SERVER_URL || "http://localhost:4000";
+import {
+  FriendItem,
+  MatchHistoryItem,
+  PendingFriendRequest,
+  RoomInfo,
+  User,
+} from "../types";
+import { getApiBaseUrl } from "./serverUrl";
+
+export class ApiError extends Error {
+  public readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.name = "ApiError";
+    this.status = status;
+  }
+}
 
 export async function apiRequest<T>(
   endpoint: string,
@@ -15,41 +32,50 @@ export async function apiRequest<T>(
     headers["Authorization"] = `Bearer ${token}`;
   }
 
-  const response = await fetch(`${SERVER_URL}${endpoint}`, {
+  const response = await fetch(`${getApiBaseUrl()}${endpoint}`, {
     ...options,
     headers,
   });
 
-  const data = await response.json();
+  const data = await response.json().catch(() => ({}));
 
   if (!response.ok) {
-    throw new Error(data.error || "An unexpected error occurred");
+    throw new ApiError(
+      (data as { error?: string }).error || "An unexpected error occurred",
+      response.status
+    );
   }
 
-  return data;
+  return data as T;
 }
 
 export const api = {
   // Auth
   register: (body: { username: string; email: string; password: string }) =>
-    apiRequest<{ token: string; user: any }>("/api/auth/register", {
+    apiRequest<{ token: string; user: User }>("/api/auth/register", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
   login: (body: { login: string; password: string }) =>
-    apiRequest<{ token: string; user: any }>("/api/auth/login", {
+    apiRequest<{ token: string; user: User }>("/api/auth/login", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
   guestLogin: (body: { displayName?: string }) =>
-    apiRequest<{ token: string; user: any }>("/api/auth/guest", {
+    apiRequest<{ token: string; user: User }>("/api/auth/guest", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
-  getMe: () => apiRequest<{ user: any }>("/api/auth/me"),
+  getMe: () => apiRequest<{ user: User }>("/api/auth/me"),
+
+  updateProfile: (body: { username?: string; avatarSeed?: string }) =>
+    apiRequest<{ user: User; token: string }>("/api/auth/me", {
+      method: "PATCH",
+      body: JSON.stringify(body),
+    }),
 
   // Rooms
   createRoom: (body: {
@@ -57,13 +83,15 @@ export const api = {
     maxPlayers?: number;
     roundCount?: number;
     entryPoints?: number;
+    turnTimeLimitSeconds?: number;
+    password?: string;
   }) =>
-    apiRequest<{ room: any }>("/api/rooms/create", {
+    apiRequest<{ room: RoomInfo }>("/api/rooms/create", {
       method: "POST",
       body: JSON.stringify(body),
     }),
 
-  getRoom: (code: string) => apiRequest<{ room: any }>(`/api/rooms/${code}`),
+  getRoom: (code: string) => apiRequest<{ room: RoomInfo }>(`/api/rooms/${code}`),
 
   // LiveKit Video
   getLiveKitToken: (roomCode: string) =>
@@ -76,7 +104,10 @@ export const api = {
     ),
 
   // Friends & Social
-  getFriends: () => apiRequest<{ friends: any[]; pendingRequests: any[] }>("/api/friends"),
+  getFriends: () =>
+    apiRequest<{ friends: FriendItem[]; pendingRequests: PendingFriendRequest[] }>(
+      "/api/friends"
+    ),
 
   sendFriendRequest: (username: string) =>
     apiRequest<{ message: string }>("/api/friends/request", {
@@ -90,5 +121,5 @@ export const api = {
       body: JSON.stringify({ requestId, action }),
     }),
 
-  getHistory: () => apiRequest<{ history: any[] }>("/api/friends/history"),
+  getHistory: () => apiRequest<{ history: MatchHistoryItem[] }>("/api/friends/history"),
 };
