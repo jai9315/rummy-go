@@ -1,5 +1,13 @@
 import { create } from "zustand";
-import { Card, LobbyPlayer, PublicGameState, RoomInvite } from "../types";
+import {
+  Card,
+  FeltTheme,
+  LobbyPlayer,
+  PublicGameState,
+  RoomInvite,
+  TableChatMessage,
+  TableReaction,
+} from "../types";
 
 export interface SetPrivateHandOptions {
   /**
@@ -7,6 +15,21 @@ export interface SetPrivateHandOptions {
    * the newly sorted hand order instead of preserving the old group layout.
    */
   applyOrder?: boolean;
+}
+
+const FELT_THEME_STORAGE_KEY = "rummy_felt_theme";
+
+function readInitialFeltTheme(): FeltTheme {
+  if (typeof window === "undefined") return "emerald";
+  try {
+    const saved = window.localStorage.getItem(FELT_THEME_STORAGE_KEY);
+    if (saved === "royal" || saved === "burgundy" || saved === "emerald") {
+      return saved;
+    }
+    return "emerald";
+  } catch {
+    return "emerald";
+  }
 }
 
 interface GameStoreState {
@@ -19,6 +42,10 @@ interface GameStoreState {
   kickedMessage: string | null;
   pendingInvite: RoomInvite | null;
   isMuted: boolean;
+  feltTheme: FeltTheme;
+  chatMessages: TableChatMessage[];
+  unreadChatCount: number;
+  activeReactions: TableReaction[];
   showDeclareModal: boolean;
   declareCardId: string | null;
 
@@ -30,6 +57,11 @@ interface GameStoreState {
   setPendingInvite: (invite: RoomInvite | null) => void;
   clearPendingInvite: () => void;
   toggleMuted: () => void;
+  setFeltTheme: (theme: FeltTheme) => void;
+  addChatMessage: (msg: TableChatMessage) => void;
+  markChatRead: () => void;
+  addReaction: (reaction: TableReaction) => void;
+  removeReaction: (reactionId: string) => void;
   toggleCardSelection: (cardId: string) => void;
   clearSelection: () => void;
   groupSelectedCards: () => void;
@@ -55,6 +87,10 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   kickedMessage: null,
   pendingInvite: null,
   isMuted: false,
+  feltTheme: readInitialFeltTheme(),
+  chatMessages: [],
+  unreadChatCount: 0,
+  activeReactions: [],
   showDeclareModal: false,
   declareCardId: null,
 
@@ -120,6 +156,33 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   clearPendingInvite: () => set({ pendingInvite: null }),
 
   toggleMuted: () => set((state) => ({ isMuted: !state.isMuted })),
+
+  setFeltTheme: (feltTheme) => {
+    if (typeof window !== "undefined") {
+      try {
+        window.localStorage.setItem(FELT_THEME_STORAGE_KEY, feltTheme);
+      } catch {}
+    }
+    set({ feltTheme });
+  },
+
+  addChatMessage: (msg) =>
+    set((state) => ({
+      chatMessages: [...state.chatMessages, msg].slice(-80),
+      unreadChatCount: state.unreadChatCount + 1,
+    })),
+
+  markChatRead: () => set({ unreadChatCount: 0 }),
+
+  addReaction: (reaction) =>
+    set((state) => ({
+      activeReactions: [...state.activeReactions, reaction].slice(-20),
+    })),
+
+  removeReaction: (reactionId) =>
+    set((state) => ({
+      activeReactions: state.activeReactions.filter((r) => r.id !== reactionId),
+    })),
 
   toggleCardSelection: (cardId) => {
     const selected = get().selectedCardIds;
@@ -258,6 +321,9 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       lobbyPlayers: [],
       error: null,
       kickedMessage: null,
+      chatMessages: [],
+      unreadChatCount: 0,
+      activeReactions: [],
       showDeclareModal: false,
       declareCardId: null,
     }),

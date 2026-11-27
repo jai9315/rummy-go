@@ -80,6 +80,7 @@ test("Real RoomManager + Socket.IO: 3-player card privacy, reconnect isolation, 
   const roomManager = new RoomManager(io, {
     turnTimeLimitSeconds: 30,
     showTimeLimitSeconds: 20,
+    tossDurationMs: 50,
   });
   io.on("connection", (socket) => roomManager.handleConnection(socket));
 

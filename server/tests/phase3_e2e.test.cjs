@@ -154,6 +154,23 @@ class PlayerSession {
 }
 
 // ---------------------------------------------------------------------------
+// Helper: resolve the session + token whose turn it currently is (post-TOSS)
+// ---------------------------------------------------------------------------
+function getTurnOrder(sessions, tokens) {
+  const latestState = (sessions[0].events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
+  const ordered = [];
+  if (latestState && Array.isArray(latestState.players)) {
+    const sortedPlayers = [...latestState.players].sort((a, b) => a.seatNumber - b.seatNumber);
+    for (const p of sortedPlayers) {
+      const idx = tokens.findIndex((t) => t.userId === p.id);
+      if (idx !== -1) ordered.push({ session: sessions[idx], token: tokens[idx], index: idx });
+    }
+  }
+  if (ordered.length === sessions.length) return ordered;
+  return sessions.map((s, idx) => ({ session: s, token: tokens[idx], index: idx }));
+}
+
+// ---------------------------------------------------------------------------
 // Helper: make all non-host players ready (server requires all ready to start)
 // ---------------------------------------------------------------------------
 async function makeAllPlayersReady(sessions, hostIndex = 0) {
@@ -353,19 +370,22 @@ test("PHASE 3: Draw and discard work correctly", async (t) => {
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
-  log("Drawing card...");
-  const drawRes = await s1.emit("DRAW_CARD", { source: "CLOSED" });
-  check("p1 can draw card", !drawRes.error, `error: ${drawRes.error}`);
+  const [firstPlayer] = getTurnOrder([s1, s2], tokens);
+  log(`Drawing card as toss winner ${firstPlayer.token.username}...`);
+  const drawRes = await firstPlayer.session.emit("DRAW_CARD", { source: "CLOSED" });
+  check("first-turn player can draw card", !drawRes.error, `error: ${drawRes.error}`);
+  await new Promise((r) => setTimeout(r, 400));
 
-  const handUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
+  const handUpdates = firstPlayer.session.events["PRIVATE_HAND_UPDATE"] || [];
   const latestHand = handUpdates[handUpdates.length - 1];
   const cardToDiscard = latestHand.cards[0].id;
   log(`Discarding card ${cardToDiscard}...`);
-  const discardRes = await s1.emit("DISCARD_CARD", { cardId: cardToDiscard });
-  check("p1 can discard card", !discardRes.error, `error: ${discardRes.error}`);
+  const discardRes = await firstPlayer.session.emit("DISCARD_CARD", { cardId: cardToDiscard });
+  check("first-turn player can discard card", !discardRes.error, `error: ${discardRes.error}`);
+  await new Promise((r) => setTimeout(r, 400));
 
   const afterDiscard = handUpdates[handUpdates.length - 1];
-  check("p1 hand back to 13 after discard", afterDiscard.cards.length === 13, `count: ${afterDiscard.cards.length}`);
+  check("first-turn player hand back to 13 after discard", afterDiscard.cards.length === 13, `count: ${afterDiscard.cards.length}`);
 
   s1.disconnect();
   s2.disconnect();
@@ -404,16 +424,20 @@ test("PHASE 3: Turn synchronization works", async (t) => {
     return;
   }
 
-  await sessions[0].emit("DRAW_CARD", { source: "CLOSED" });
+  const ordered = getTurnOrder(sessions, tokens);
+  const active = ordered[0].session;
+  const next = ordered[1].session;
+
+  await active.emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 500));
-  const hand1 = sessions[0].events["PRIVATE_HAND_UPDATE"].pop().cards;
-  await sessions[0].emit("DISCARD_CARD", { cardId: hand1[0].id });
+  const hand1 = active.events["PRIVATE_HAND_UPDATE"].pop().cards;
+  await active.emit("DISCARD_CARD", { cardId: hand1[0].id });
   await new Promise((r) => setTimeout(r, 500));
 
   // After draw: phase=DISCARD (same player). After discard: phase=DRAW (next player).
-  const s0Updates = sessions[0].events["GAME_STATE_UPDATE"] || [];
-  const stateAfterDraw = s0Updates[s0Updates.length - 2]; // state after DRAW_CARD
-  const stateAfterDiscard = sessions[1].events["GAME_STATE_UPDATE"].pop();
+  const activeUpdates = active.events["GAME_STATE_UPDATE"] || [];
+  const stateAfterDraw = activeUpdates[activeUpdates.length - 2]; // state after DRAW_CARD
+  const stateAfterDiscard = next.events["GAME_STATE_UPDATE"].pop();
   check("Turn phase is DISCARD after draw", stateAfterDraw && stateAfterDraw.turnPhase === "DISCARD", `phase: ${stateAfterDraw?.turnPhase}`);
   check("Turn advances to next player (DRAW) after discard", stateAfterDiscard && stateAfterDiscard.turnPhase === "DRAW" && stateAfterDiscard.currentTurnPlayerId !== initialState.currentTurnPlayerId, `phase: ${stateAfterDiscard?.turnPhase}, turn: ${stateAfterDiscard?.currentTurnPlayerId}`);
 
@@ -437,19 +461,20 @@ test("PHASE 3: Invalid declaration is rejected", async (t) => {
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
-  await s1.emit("DRAW_CARD", { source: "CLOSED" });
+  const [activeP] = getTurnOrder([s1, s2], tokens);
+  await activeP.session.emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 500));
 
-  const handUpdates = s1.events["PRIVATE_HAND_UPDATE"] || [];
+  const handUpdates = activeP.session.events["PRIVATE_HAND_UPDATE"] || [];
   const hand = handUpdates[handUpdates.length - 1].cards;
   const declareCardId = hand[hand.length - 1].id;
 
   const badMelds = [hand.slice(0, 3), hand.slice(3, 6), hand.slice(6, 9)];
-  await s1.emit("DECLARE", { melds: badMelds, declareCardId });
+  await activeP.session.emit("DECLARE", { melds: badMelds, declareCardId });
   await new Promise((r) => setTimeout(r, 500));
 
   // Invalid declare should NOT advance the game to ROUND_END — state stays PLAYING
-  const stateUpdates = s1.events["GAME_STATE_UPDATE"] || [];
+  const stateUpdates = activeP.session.events["GAME_STATE_UPDATE"] || [];
   const latestState = stateUpdates[stateUpdates.length - 1];
   const declareRejected = latestState && latestState.status === "PLAYING";
   check("Invalid declare (wrong card count) rejected — game stays PLAYING", declareRejected, `status: ${latestState?.status}`);
@@ -549,22 +574,23 @@ test("PHASE 3: 3-player invalid declaration emits ERROR to declarer and broadcas
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
-  await sessions[0].emit("DRAW_CARD", { source: "CLOSED" });
+  const [firstP] = getTurnOrder(sessions, tokens);
+  await firstP.session.emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 500));
 
-  const hand = sessions[0].events["PRIVATE_HAND_UPDATE"].slice(-1)[0].cards;
+  const hand = firstP.session.events["PRIVATE_HAND_UPDATE"].slice(-1)[0].cards;
   const declareCardId = hand[hand.length - 1].id;
-  // 13 valid server card IDs in one giant invalid meld -> fails Evaluator (drops p1, advances turn to p2)
+  // 13 valid server card IDs in one giant invalid meld -> fails Evaluator (drops declarer, advances turn)
   const invalidMelds = [hand.slice(0, 13)];
 
   // Record counts before DECLARE
   const preStateCounts = sessions.map((s) => (s.events["GAME_STATE_UPDATE"] || []).length);
-  const preErrorCount = (sessions[0].events["ERROR"] || []).length;
+  const preErrorCount = (firstP.session.events["ERROR"] || []).length;
 
-  await sessions[0].emit("DECLARE", { melds: invalidMelds, declareCardId });
+  await firstP.session.emit("DECLARE", { melds: invalidMelds, declareCardId });
   await new Promise((r) => setTimeout(r, 700));
 
-  const declarerErrors = (sessions[0].events["ERROR"] || []).slice(preErrorCount);
+  const declarerErrors = (firstP.session.events["ERROR"] || []).slice(preErrorCount);
   check(
     "3-player invalid declare emits ERROR to declarer",
     declarerErrors.length >= 1 && typeof declarerErrors[0].message === "string",
@@ -583,8 +609,8 @@ test("PHASE 3: 3-player invalid declaration emits ERROR to declarer and broadcas
       check(
         `Player ${i + 1} sees turn advanced away from dropped declarer`,
         latest.status === "PLAYING" &&
-          latest.currentTurnPlayerId !== tokens[0].userId &&
-          latest.players.find((p) => p.id === tokens[0].userId)?.hasDropped === true,
+          latest.currentTurnPlayerId !== firstP.token.userId &&
+          latest.players.find((p) => p.id === firstP.token.userId)?.hasDropped === true,
         `status=${latest.status}, turn=${latest.currentTurnPlayerId}`
       );
     }
@@ -610,24 +636,26 @@ test("PHASE 3: 3-player DROP round end populates winnerId, per-player first drop
   await sessions[0].emit("START_GAME");
   await new Promise((r) => setTimeout(r, 1000));
 
-  // Player 1 drops (First Drop: 20 pts)
-  await sessions[0].emit("DROP");
+  const [firstP, secondP, thirdP] = getTurnOrder(sessions, tokens);
+
+  // First seat drops (First Drop: 20 pts)
+  await firstP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 500));
 
-  // Player 2 drops on their own first turn (per-player First Drop: 20 pts) -> Player 3 wins!
-  await sessions[1].emit("DROP");
+  // Second seat drops on their own first turn (per-player First Drop: 20 pts) -> Third seat wins!
+  await secondP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 800));
 
-  const latestState = (sessions[2].events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
+  const latestState = (thirdP.session.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
   check("Single-round drop ends with status GAME_OVER", latestState?.status === "GAME_OVER", `status=${latestState?.status}`);
-  check("winnerId populated as remaining player p3", latestState?.winnerId === tokens[2].userId, `winnerId=${latestState?.winnerId}`);
+  check("winnerId populated as remaining player", latestState?.winnerId === thirdP.token.userId, `winnerId=${latestState?.winnerId}`);
   check("All 3 players appear in roundScores", latestState?.roundScores && Object.keys(latestState.roundScores).length === 3, `keys=${Object.keys(latestState?.roundScores || {})}`);
-  check("p1 first drop is 20 pts", latestState?.roundScores?.[tokens[0].userId]?.points === 20);
-  check("p2 per-player first drop is 20 pts", latestState?.roundScores?.[tokens[1].userId]?.points === 20);
-  check("p3 winner score is 0 pts", latestState?.roundScores?.[tokens[2].userId]?.points === 0);
+  check("first seat drop is 20 pts", latestState?.roundScores?.[firstP.token.userId]?.points === 20);
+  check("second seat per-player first drop is 20 pts", latestState?.roundScores?.[secondP.token.userId]?.points === 20);
+  check("winner score is 0 pts", latestState?.roundScores?.[thirdP.token.userId]?.points === 0);
 
   // Verify DROP-ended round persisted GameResult in DB via /api/friends/history
-  const historyRes = await apiGet("/friends/history", tokens[2].token);
+  const historyRes = await apiGet("/friends/history", thirdP.token.token);
   const matchingResult = (historyRes.body.history || []).find(
     (item) => item.game?.room?.roomCode === roomCode
   );
@@ -696,14 +724,16 @@ test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalS
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 900));
 
-  // Round 1: p1 drops (+20 pts) -> ROUND_END (round 1 of 2)
-  await s1.emit("DROP");
+  const [firstP, secondP] = getTurnOrder([s1, s2], tokens);
+
+  // Round 1: first turn player drops (+20 pts) -> ROUND_END (round 1 of 2)
+  await firstP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 700));
 
   const r1End = (s1.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
   check("Round 1 of 2 ends in ROUND_END", r1End?.status === "ROUND_END", `status=${r1End?.status}`);
   check("Round 1 roundNumber=1 and roundCount=2", r1End?.roundNumber === 1 && r1End?.roundCount === 2);
-  check("Round 1 totalScores tracks p1=20, p2=0", r1End?.totalScores?.[tokens[0].userId] === 20 && r1End?.totalScores?.[tokens[1].userId] === 0);
+  check("Round 1 totalScores tracks dropped=20, winner=0", r1End?.totalScores?.[firstP.token.userId] === 20 && r1End?.totalScores?.[secondP.token.userId] === 0);
 
   // Non-host NEXT_ROUND must be rejected
   const preS2Errors = (s2.events["ERROR"] || []).length;
@@ -724,16 +754,16 @@ test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalS
   check("NEXT_ROUND transitions to PLAYING with roundNumber=2", r2Start?.status === "PLAYING" && r2Start?.roundNumber === 2, `status=${r2Start?.status}, round=${r2Start?.roundNumber}`);
   check("NEXT_ROUND deals fresh 13 cards to both players", r2Hand1?.cards?.length === 13 && r2Hand2?.cards?.length === 13);
   check("NEXT_ROUND sets server-authoritative turnEndsAt", typeof r2Start?.turnEndsAt === "number" && r2Start.turnEndsAt > Date.now());
-  check("Round 2 preserves cumulative totalScores from Round 1", r2Start?.totalScores?.[tokens[0].userId] === 20);
+  check("Round 2 preserves cumulative totalScores from Round 1", r2Start?.totalScores?.[firstP.token.userId] === 20);
 
-  // Round 2: p1 drops again (+20 -> cumulative 40 pts) -> GAME_OVER
-  await s1.emit("DROP");
+  // Round 2: first turn player drops again (+20 -> cumulative 40 pts) -> GAME_OVER
+  await firstP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 800));
 
   const r2End = (s1.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
   check("Final round transitions to GAME_OVER", r2End?.status === "GAME_OVER", `status=${r2End?.status}`);
-  check("Cumulative totalScores accumulates across rounds (p1=40, p2=0)", r2End?.totalScores?.[tokens[0].userId] === 40 && r2End?.totalScores?.[tokens[1].userId] === 0, `totalScores=${JSON.stringify(r2End?.totalScores)}`);
-  check("GAME_OVER includes sorted rankings (lowest score first)", Array.isArray(r2End?.rankings) && r2End.rankings[0]?.playerId === tokens[1].userId && r2End.rankings[1]?.totalScore === 40, `rankings=${JSON.stringify(r2End?.rankings)}`);
+  check("Cumulative totalScores accumulates across rounds (dropped=40, winner=0)", r2End?.totalScores?.[firstP.token.userId] === 40 && r2End?.totalScores?.[secondP.token.userId] === 0, `totalScores=${JSON.stringify(r2End?.totalScores)}`);
+  check("GAME_OVER includes sorted rankings (lowest score first)", Array.isArray(r2End?.rankings) && r2End.rankings[0]?.playerId === secondP.token.userId && r2End.rankings[1]?.totalScore === 40, `rankings=${JSON.stringify(r2End?.rankings)}`);
 
   // Return to lobby without leaving room
   await s1.emit("RETURN_TO_LOBBY");
@@ -759,36 +789,41 @@ test("PHASE 3: Overlapping reconnect (dual-tab) keeps active socket receiving PR
   await s1Old.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 900));
 
-  // Open overlapping second socket for the SAME user (p1) BEFORE closing old socket
-  const s1New = new PlayerSession(tokens[0].token, tokens[0].username);
-  await s1New.connect(roomCode);
+  // Determine who holds first turn after TOSS and test dual-tab reconnect for that player
+  const [firstP, otherP] = getTurnOrder([s1Old, s2], tokens);
+  const targetOld = firstP.session;
+  const targetToken = firstP.token;
+
+  // Open overlapping second socket for the SAME user BEFORE closing old socket
+  const targetNew = new PlayerSession(targetToken.token, targetToken.username);
+  await targetNew.connect(roomCode);
   await new Promise((r) => setTimeout(r, 700));
 
-  // Now disconnect the old socket -> MUST NOT delete userSockets mapping for s1New!
-  s1Old.disconnect();
+  // Now disconnect the old socket -> MUST NOT delete userSockets mapping for targetNew!
+  targetOld.disconnect();
   await new Promise((r) => setTimeout(r, 500));
 
-  const preUpdates = (s1New.events["PRIVATE_HAND_UPDATE"] || []).length;
-  await s1New.emit("DRAW_CARD", { source: "CLOSED" });
+  const preUpdates = (targetNew.events["PRIVATE_HAND_UPDATE"] || []).length;
+  await targetNew.emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 600));
 
-  const newUpdates = (s1New.events["PRIVATE_HAND_UPDATE"] || []).slice(preUpdates);
+  const newUpdates = (targetNew.events["PRIVATE_HAND_UPDATE"] || []).slice(preUpdates);
   const latestHand = newUpdates[newUpdates.length - 1];
   check(
-    "Active socket s1New still receives PRIVATE_HAND_UPDATE after old socket disconnects",
+    "Active socket still receives PRIVATE_HAND_UPDATE after old socket disconnects",
     Boolean(latestHand && latestHand.cards && latestHand.cards.length === 14),
     `updates=${newUpdates.length}, cards=${latestHand?.cards?.length}`
   );
 
   if (latestHand?.cards?.length === 14) {
-    await s1New.emit("DISCARD_CARD", { cardId: latestHand.cards[0].id });
+    await targetNew.emit("DISCARD_CARD", { cardId: latestHand.cards[0].id });
     await new Promise((r) => setTimeout(r, 400));
-    const afterDiscard = (s1New.events["PRIVATE_HAND_UPDATE"] || []).slice(-1)[0];
-    check("Active socket s1New receives 13-card hand after discard", afterDiscard?.cards?.length === 13);
+    const afterDiscard = (targetNew.events["PRIVATE_HAND_UPDATE"] || []).slice(-1)[0];
+    check("Active socket receives 13-card hand after discard", afterDiscard?.cards?.length === 13);
   }
 
-  s1New.disconnect();
-  s2.disconnect();
+  targetNew.disconnect();
+  otherP.session.disconnect();
 });
 
 test("PHASE 3: All-disconnect pauses timer and reconnect restarts paused turn timer", async () => {
@@ -946,7 +981,11 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
   const httpServer = http.createServer();
   const ioServer = new SocketIOServer(httpServer, { transports: ["websocket"] });
   ioServer.use(socketAuthMiddleware);
-  const rm = new RoomManager(ioServer, { turnTimeLimitSeconds: 20, showTimeLimitSeconds: 20 });
+  const rm = new RoomManager(ioServer, {
+    turnTimeLimitSeconds: 20,
+    showTimeLimitSeconds: 20,
+    tossDurationMs: 50,
+  });
   ioServer.on("connection", (sock) => rm.handleConnection(sock));
 
   await new Promise((resolve) => httpServer.listen(0, "127.0.0.1", resolve));
@@ -1034,8 +1073,13 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
   c2b.socket.emit("JOIN_ROOM", { roomCode: "SHW202" });
   await new Promise((r) => setTimeout(r, 200));
 
-  // Drive DECLARE -> SHOW -> SUBMIT_MELDS over real Socket.IO
-  c1b.socket.emit("DRAW_CARD", { source: "CLOSED" });
+  // Drive DECLARE -> SHOW -> SUBMIT_MELDS over real Socket.IO using the toss winner
+  const declarerId = activeGame.getCurrentTurnPlayerId();
+  const opponentId = declarerId === u1.id ? u2.id : u1.id;
+  const declarerSock = declarerId === u1.id ? c1b : c2b;
+  const opponentSock = declarerId === u1.id ? c2b : c1b;
+
+  declarerSock.socket.emit("DRAW_CARD", { source: "CLOSED" });
   await new Promise((r) => setTimeout(r, 200));
 
   const mk = (id, suit, rank, isWildJoker = false, isPrintedJoker = false) => ({
@@ -1048,7 +1092,7 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
     [mk("H3_a", "HEARTS", "3"), mk("D3_a", "DIAMONDS", "3"), mk("C3_a", "CLUBS", "3")],
   ];
   const p1Discard = mk("C9_a", "CLUBS", "9");
-  activeGame.getPlayer(u1.id).hand = [...p1Melds.flat(), p1Discard];
+  activeGame.getPlayer(declarerId).hand = [...p1Melds.flat(), p1Discard];
 
   // Opponent has 1 pure + 1 impure + 1 set + 4 low deadwood cards (2 + 3 + 4 + 5 = 14 pts)
   const p2Melds = [
@@ -1057,24 +1101,24 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
     [mk("HQ_b", "HEARTS", "Q"), mk("SQ_b", "SPADES", "Q"), mk("DQ_b", "DIAMONDS", "Q")],
     [mk("C2_b", "CLUBS", "2"), mk("H3_b", "HEARTS", "3"), mk("S4_b", "SPADES", "4"), mk("S5_b", "SPADES", "5")],
   ];
-  activeGame.getPlayer(u2.id).hand = p2Melds.flat();
+  activeGame.getPlayer(opponentId).hand = p2Melds.flat();
 
-  c1b.socket.emit("DECLARE", { melds: p1Melds, declareCardId: p1Discard.id });
+  declarerSock.socket.emit("DECLARE", { melds: p1Melds, declareCardId: p1Discard.id });
   await new Promise((r) => setTimeout(r, 300));
 
-  const showState = (c2b.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
+  const showState = (opponentSock.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
   check("Socket DECLARE transitions game to SHOW phase", showState?.status === "SHOW", `status=${showState?.status}`);
   check("SHOW state broadcasts winnerMelds and showEndsAt", showState?.winnerMelds?.length === 4 && typeof showState?.showEndsAt === "number");
 
   // Opponent submits melds via Socket SUBMIT_MELDS
-  c2b.socket.emit("SUBMIT_MELDS", { melds: p2Melds });
+  opponentSock.socket.emit("SUBMIT_MELDS", { melds: p2Melds });
   await new Promise((r) => setTimeout(r, 350));
 
-  const roundEndState = (c2b.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
+  const roundEndState = (opponentSock.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
   check("Socket SUBMIT_MELDS finalizes round to ROUND_END", roundEndState?.status === "ROUND_END", `status=${roundEndState?.status}`);
   check(
     "Opponent receives reduced deadwood score (14 pts, not 80)",
-    roundEndState?.roundScores?.[u2.id]?.points === 14 && roundEndState?.roundScores?.[u1.id]?.points === 0,
+    roundEndState?.roundScores?.[opponentId]?.points === 14 && roundEndState?.roundScores?.[declarerId]?.points === 0,
     `scores=${JSON.stringify(roundEndState?.roundScores)}`
   );
 });
@@ -1323,6 +1367,105 @@ test("PHASE 3: INVITE_FRIEND delivers ROOM_INVITE_RECEIVED to online friend, rej
   sHost.disconnect();
   sFriend.disconnect();
   sOutsider.disconnect();
+});
+
+test("PHASE 3: TOSS phase draws unique cards, sorts by rank+suit, reshuffles & deals 13 cards, and assigns first turn to #1 winner", async () => {
+  console.log("\n=== Test: TOSS -> PLAYING E2E ===");
+  const tokens = await Promise.all([1, 2, 3].map((i) => createUser(1200 + i)));
+  const roomCode = await createRoom(tokens[0].token);
+
+  const sessions = [];
+  for (let i = 0; i < 3; i++) {
+    const s = new PlayerSession(tokens[i].token, tokens[i].username);
+    await s.connect(roomCode);
+    sessions.push(s);
+  }
+  await new Promise((r) => setTimeout(r, 600));
+  await makeAllPlayersReady(sessions, 0);
+
+  await sessions[0].emit("START_GAME");
+  await new Promise((r) => setTimeout(r, 800));
+
+  const allUpdates = sessions[0].events["GAME_STATE_UPDATE"] || [];
+  const tossState = allUpdates.find((u) => u.status === "TOSS");
+  const playingState = [...allUpdates].reverse().find((u) => u.status === "PLAYING");
+
+  check("Server emits status='TOSS' before PLAYING", Boolean(tossState), `statuses=${allUpdates.map((u) => u.status).join(",")}`);
+  check("TOSS state contains 3 tossResults with tossEndsAt", Boolean(tossState?.tossResults?.length === 3 && typeof tossState?.tossEndsAt === "number"));
+
+  if (tossState?.tossResults?.length === 3) {
+    const rankP = { A: 14, K: 13, Q: 12, J: 11, "10": 10, "9": 9, "8": 8, "7": 7, "6": 6, "5": 5, "4": 4, "3": 3, "2": 2 };
+    const suitP = { SPADES: 4, HEARTS: 3, DIAMONDS: 2, CLUBS: 1 };
+    const prio = (c) => (rankP[c.rank] || 0) * 10 + (suitP[c.suit] || 0);
+    const uniqueKeys = new Set(tossState.tossResults.map((r) => `${r.card.suit}_${r.card.rank}`));
+    check("TOSS draws 1 unique non-joker card per player", uniqueKeys.size === 3 && tossState.tossResults.every((r) => !r.card.isPrintedJoker));
+    check(
+      "TOSS results are sorted strictly descending by Rank + Suit priority",
+      prio(tossState.tossResults[0].card) > prio(tossState.tossResults[1].card) &&
+        prio(tossState.tossResults[1].card) > prio(tossState.tossResults[2].card)
+    );
+    check(
+      "PLAYING assigns first turn to #1 toss winner",
+      Boolean(playingState && playingState.currentTurnPlayerId === tossState.tossResults[0].playerId),
+      `tossWinner=${tossState.tossResults[0].playerId}, firstTurn=${playingState?.currentTurnPlayerId}`
+    );
+  }
+
+  for (let i = 0; i < 3; i++) {
+    const handEv = (sessions[i].events["PRIVATE_HAND_UPDATE"] || []).slice(-1)[0];
+    check(`Player ${i + 1} receives 13 cards after TOSS reshuffle`, handEv?.cards?.length === 13);
+  }
+
+  for (const s of sessions) s.disconnect();
+});
+
+test("PHASE 3: CHAT_MESSAGE and SEND_REACTION broadcast within room only (no cross-room leakage)", async () => {
+  console.log("\n=== Test: Room-scoped CHAT_MESSAGE & SEND_REACTION ===");
+  const [uA1, uA2, uB1] = await Promise.all([1, 2, 3].map((i) => createUser(1300 + i)));
+  const roomA = await createRoom(uA1.token, { roomName: "Room Alpha" });
+  const roomB = await createRoom(uB1.token, { roomName: "Room Beta" });
+
+  const sA1 = new PlayerSession(uA1.token, uA1.username);
+  const sA2 = new PlayerSession(uA2.token, uA2.username);
+  const sB1 = new PlayerSession(uB1.token, uB1.username);
+  await sA1.connect(roomA);
+  await sA2.connect(roomA);
+  await sB1.connect(roomB);
+  await new Promise((r) => setTimeout(r, 500));
+
+  await sA1.emit("CHAT_MESSAGE", { text: "Good luck at Royal 13!" });
+  await sA2.emit("SEND_REACTION", { emoji: "🔥" });
+  await new Promise((r) => setTimeout(r, 400));
+
+  const a1Chats = sA1.events["CHAT_MESSAGE"] || [];
+  const a2Chats = sA2.events["CHAT_MESSAGE"] || [];
+  const b1Chats = sB1.events["CHAT_MESSAGE"] || [];
+  check(
+    "Same-room members receive CHAT_MESSAGE with sender metadata",
+    a1Chats.length === 1 &&
+      a2Chats.length === 1 &&
+      a2Chats[0].text === "Good luck at Royal 13!" &&
+      a2Chats[0].playerId === uA1.userId &&
+      a2Chats[0].roomCode === roomA
+  );
+  check("Other-room socket receives ZERO CHAT_MESSAGE events", b1Chats.length === 0, `b1Chats=${b1Chats.length}`);
+
+  const a1Reacts = sA1.events["SEND_REACTION"] || [];
+  const a2Reacts = sA2.events["SEND_REACTION"] || [];
+  const b1Reacts = sB1.events["SEND_REACTION"] || [];
+  check(
+    "Same-room members receive SEND_REACTION with emoji & playerId",
+    a1Reacts.length === 1 &&
+      a2Reacts.length === 1 &&
+      a1Reacts[0].emoji === "🔥" &&
+      a1Reacts[0].playerId === uA2.userId &&
+      a1Reacts[0].roomCode === roomA
+  );
+  check("Other-room socket receives ZERO SEND_REACTION events", b1Reacts.length === 0, `b1Reacts=${b1Reacts.length}`);
+
+  sA1.disconnect();
+  sA2.disconnect();
+  sB1.disconnect();
 });
 
 // ---------------------------------------------------------------------------

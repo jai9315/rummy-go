@@ -5,6 +5,7 @@ import { VideoFallbackGrid } from "@/components/video/VideoOverlay";
 
 interface VideoErrorBoundaryProps {
   children: React.ReactNode;
+  fallback?: React.ReactNode;
 }
 
 interface VideoErrorBoundaryState {
@@ -13,8 +14,7 @@ interface VideoErrorBoundaryState {
 
 /**
  * Lightweight React Error Boundary around VideoOverlay so any unexpected
- * WebRTC/LiveKit SDK exception falls back to the hook-free avatar grid
- * instead of crashing the game table.
+ * WebRTC/LiveKit SDK exception falls back cleanly without crashing the game table.
  */
 export class VideoErrorBoundary extends React.Component<
   VideoErrorBoundaryProps,
@@ -30,12 +30,16 @@ export class VideoErrorBoundary extends React.Component<
   }
 
   componentDidCatch(error: Error, info: React.ErrorInfo): void {
-    console.warn("VideoOverlay caught runtime error, falling back to avatar grid:", error, info);
+    console.warn(
+      "VideoOverlay caught runtime error, falling back to hook-free context:",
+      error,
+      info
+    );
   }
 
   render(): React.ReactNode {
     if (this.state.hasError) {
-      return <VideoFallbackGrid statusLabel="Video Unavailable" />;
+      return <VideoFallbackGrid>{this.props.fallback}</VideoFallbackGrid>;
     }
     return this.props.children;
   }

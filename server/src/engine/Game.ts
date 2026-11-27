@@ -1,3 +1,4 @@
+import crypto from "crypto";
 import { Deck } from "./Deck";
 import { Evaluator } from "./Evaluator";
 import {
@@ -7,8 +8,51 @@ import {
   PlayerRanking,
   PublicGameState,
   Rank,
+  RoundHistoryEntry,
+  Suit,
+  TossResult,
   TurnPhase,
 } from "./types";
+
+const TOSS_RANK_PRIORITY: Record<string, number> = {
+  A: 14,
+  K: 13,
+  Q: 12,
+  J: 11,
+  "10": 10,
+  "9": 9,
+  "8": 8,
+  "7": 7,
+  "6": 6,
+  "5": 5,
+  "4": 4,
+  "3": 3,
+  "2": 2,
+};
+
+const TOSS_SUIT_PRIORITY: Record<string, number> = {
+  SPADES: 4,
+  HEARTS: 3,
+  DIAMONDS: 2,
+  CLUBS: 1,
+};
+
+const TOSS_SUITS: Suit[] = ["SPADES", "HEARTS", "DIAMONDS", "CLUBS"];
+const TOSS_RANKS: Rank[] = [
+  "A",
+  "K",
+  "Q",
+  "J",
+  "10",
+  "9",
+  "8",
+  "7",
+  "6",
+  "5",
+  "4",
+  "3",
+  "2",
+];
 
 export interface PlayerInternalState {
   id: string;
@@ -29,6 +73,7 @@ export interface PlayerInternalState {
 export interface GameOptions {
   turnTimeLimitSeconds?: number;
   showTimeLimitSeconds?: number;
+  tossDurationMs?: number;
   entryPoints?: number;
   roundCount?: number;
   onStateUpdate?: (state: PublicGameState) => void;
@@ -52,10 +97,14 @@ export class Game {
 
   private deck: Deck = new Deck();
   private discardPile: Card[] = [];
-  private wildJoker!: Card;
+  private wildJoker: Card | null = null;
   private wildRank: Rank = "A";
 
   private timerInterval: NodeJS.Timeout | null = null;
+  private tossTimer: NodeJS.Timeout | null = null;
+  private tossDurationMs: number;
+  private tossResults?: TossResult[];
+  private tossEndsAt: number | null = null;
   private turnTimeLimit: number;
   private showTimeLimit: number;
   private turnTimeRemaining: number;
@@ -66,6 +115,7 @@ export class Game {
   private winnerMelds?: Card[][];
   private submittedMeldPlayerIds: Set<string> = new Set();
   private roundScores: Record<string, { points: number; totalScore: number; reason: string }> = {};
+  private roundHistory: RoundHistoryEntry[] = [];
   private roundDropRecords: Map<string, { points: number; reason: string }> = new Map();
 
   private onStateUpdate?: (state: PublicGameState) => void;
@@ -85,10 +135,23 @@ export class Game {
     this.roundCount = Math.max(1, options.roundCount ?? 1);
     this.turnTimeLimit = options.turnTimeLimitSeconds || 30;
     this.showTimeLimit = options.showTimeLimitSeconds || 30;
+    this.tossDurationMs =
+      options.tossDurationMs !== undefined ? Math.max(0, options.tossDurationMs) : 3500;
     this.turnTimeRemaining = this.turnTimeLimit;
     this.onStateUpdate = options.onStateUpdate;
     this.onPrivateUpdate = options.onPrivateUpdate;
     this.onTurnTimeout = options.onTurnTimeout;
+  }
+
+  /**
+   * Computes strict toss priority score:
+   * Rank priority: A(14) > K(13) > Q(12) > J(11) > 10 > ... > 2
+   * Suit tie-breaker: SPADES(4) > HEARTS(3) > DIAMONDS(2) > CLUBS(1)
+   */
+  public static getTossCardPriority(card: Card): number {
+    const rankScore = TOSS_RANK_PRIORITY[card.rank] ?? 0;
+    const suitScore = TOSS_SUIT_PRIORITY[card.suit] ?? 0;
+    return rankScore * 10 + suitScore;
   }
 
   public addPlayer(
@@ -150,6 +213,122 @@ export class Game {
   }
 
   /**
+   * Starts the match with a server-authoritative TOSS phase to determine seat & turn order.
+   * 1. Shuffles a fresh 52-card deck (excluding Printed Jokers) using crypto.randomInt.
+   * 2. Draws 1 unique face-up card per player.
+   * 3. Ranks players by Rank (A high -> 2 low) and Suit tie-breaker (♠ > ♥ > ♦ > ♣).
+   * 4. Reorders players (seatNumber 1..N and turnOrder) from highest priority to lowest.
+   * 5. Emits GAME_STATE_UPDATE with status="TOSS", tossResults, and tossEndsAt.
+   * 6. After tossDurationMs, reshuffles the full 108-card deck and starts Round 1.
+   */
+  public startToss(): void {
+    if (this.players.size < 2) {
+      throw new Error("Need at least 2 players to start game");
+    }
+
+    this.clearTimers();
+    this.winnerId = undefined;
+    this.winnerMelds = undefined;
+    this.submittedMeldPlayerIds.clear();
+    this.roundScores = {};
+    this.roundDropRecords.clear();
+    this.discardPile = [];
+    this.wildJoker = null;
+    this.turnEndsAt = null;
+    this.showEndsAt = null;
+
+    // Build a fresh 52-card standard deck (excluding Printed Jokers) for unique toss draws
+    const tossDeck: Card[] = [];
+    let counter = 1;
+    for (const suit of TOSS_SUITS) {
+      for (const rank of TOSS_RANKS) {
+        tossDeck.push({
+          id: `TOSS_${suit[0]}_${rank}_${counter++}`,
+          suit,
+          rank,
+          isWildJoker: false,
+          isPrintedJoker: false,
+        });
+      }
+    }
+
+    // Cryptographically secure Fisher-Yates shuffle
+    for (let i = tossDeck.length - 1; i > 0; i--) {
+      const j = crypto.randomInt(0, i + 1);
+      const tmp = tossDeck[i];
+      tossDeck[i] = tossDeck[j];
+      tossDeck[j] = tmp;
+    }
+
+    const currentPlayers = Array.from(this.players.values()).sort(
+      (a, b) => a.seatNumber - b.seatNumber
+    );
+
+    const draws = currentPlayers.map((player) => {
+      const card = tossDeck.pop()!;
+      player.hand = [];
+      player.hasDropped = false;
+      player.score = 0;
+      player.consecutiveTimeouts = 0;
+      player.hasDrawn = false;
+      player.melds = undefined;
+      return {
+        player,
+        card,
+        priority: Game.getTossCardPriority(card),
+      };
+    });
+
+    // Highest priority first (seatIndex 0 -> gets first turn)
+    draws.sort((a, b) => b.priority - a.priority);
+
+    // Reorder internal players Map & seatNumbers to reflect toss result
+    const reorderedMap = new Map<string, PlayerInternalState>();
+    const results: TossResult[] = [];
+    for (let seatIndex = 0; seatIndex < draws.length; seatIndex++) {
+      const entry = draws[seatIndex];
+      entry.player.seatNumber = seatIndex + 1;
+      reorderedMap.set(entry.player.id, entry.player);
+      results.push({
+        playerId: entry.player.id,
+        username: entry.player.username,
+        card: entry.card,
+        seatIndex,
+      });
+    }
+
+    this.players = reorderedMap;
+    this.turnOrder = draws.map((d) => d.player.id);
+    this.currentTurnIndex = 0;
+    this.turnPhase = "DRAW";
+    this.tossResults = results;
+    this.status = "TOSS";
+    this.tossEndsAt = Date.now() + this.tossDurationMs;
+
+    this.broadcastState();
+
+    if (this.tossDurationMs <= 0) {
+      this.startRound();
+      return;
+    }
+
+    this.scheduleTossCompletion(this.tossDurationMs);
+  }
+
+  private scheduleTossCompletion(delayMs: number): void {
+    if (this.tossTimer) {
+      clearTimeout(this.tossTimer);
+      this.tossTimer = null;
+    }
+    this.tossTimer = setTimeout(() => {
+      this.tossTimer = null;
+      if (this.status === "TOSS") {
+        this.startRound();
+      }
+    }, Math.max(0, delayMs));
+  }
+
+  /**
    * Starts a new round (preserves cumulative totalScore across rounds)
    */
   public startRound(): void {
@@ -166,6 +345,8 @@ export class Game {
     this.roundDropRecords.clear();
     this.turnEndsAt = null;
     this.showEndsAt = null;
+    this.tossEndsAt = null;
+    this.tossResults = undefined;
     this.deck.reset();
     this.deck.shuffle();
 
@@ -797,7 +978,7 @@ export class Game {
   }
 
   public isTimerRunning(): boolean {
-    return this.timerInterval !== null;
+    return this.timerInterval !== null || this.tossTimer !== null;
   }
 
   public stopTimer(): void {
@@ -810,14 +991,22 @@ export class Game {
     this.clearTimers();
     this.turnEndsAt = null;
     this.showEndsAt = null;
+    this.tossEndsAt = null;
   }
 
   /**
-   * Resumes a paused turn or show timer (e.g., when a player reconnects after
+   * Resumes a paused turn, show, or toss timer (e.g., when a player reconnects after
    * all players had disconnected). Returns true if a timer was restarted.
    */
   public resumeTimer(): boolean {
-    if (this.timerInterval !== null) return false;
+    if (this.timerInterval !== null || this.tossTimer !== null) return false;
+
+    if (this.status === "TOSS") {
+      const remainingMs = Math.min(this.tossDurationMs, 1500);
+      this.tossEndsAt = Date.now() + remainingMs;
+      this.scheduleTossCompletion(remainingMs);
+      return true;
+    }
 
     if (this.status === "PLAYING") {
       const remaining =
@@ -923,6 +1112,10 @@ export class Game {
       clearInterval(this.timerInterval);
       this.timerInterval = null;
     }
+    if (this.tossTimer) {
+      clearTimeout(this.tossTimer);
+      this.tossTimer = null;
+    }
   }
 
   private endRound(
@@ -933,10 +1126,16 @@ export class Game {
     this.clearTimers();
     this.turnEndsAt = null;
     this.showEndsAt = null;
+    this.tossEndsAt = null;
     this.turnTimeRemaining = 0;
     this.status = this.roundNumber >= this.roundCount ? "GAME_OVER" : "ROUND_END";
     this.winnerId = winnerId;
     this.roundScores = scores;
+    const roundPoints: Record<string, number> = {};
+    for (const [pid, info] of Object.entries(scores)) {
+      roundPoints[pid] = info.points;
+    }
+    this.roundHistory.push({ roundNumber: this.roundNumber, scores: roundPoints });
     this.broadcastState(lastAction);
   }
 
@@ -1024,12 +1223,15 @@ export class Game {
       turnEndsAt: this.turnEndsAt,
       showTimeLimitSeconds: this.showTimeLimit,
       showEndsAt: this.showEndsAt,
+      tossResults: this.tossResults,
+      tossEndsAt: this.tossEndsAt,
       wildJoker: this.wildJoker,
       wildRank: this.wildRank,
       topDiscardCard:
         this.discardPile.length > 0
           ? this.discardPile[this.discardPile.length - 1]
           : null,
+      recentDiscards: this.discardPile.slice(-5),
       closedDeckCount: this.deck.count,
       discardPileCount: this.discardPile.length,
       players: publicPlayers,
@@ -1038,6 +1240,7 @@ export class Game {
       winnerMelds: this.winnerMelds,
       submittedMeldPlayerIds: Array.from(this.submittedMeldPlayerIds),
       roundScores: this.roundScores,
+      roundHistory: this.roundHistory.length > 0 ? [...this.roundHistory] : undefined,
       totalScores,
       rankings: this.status === "GAME_OVER" ? this.buildRankings() : undefined,
     };

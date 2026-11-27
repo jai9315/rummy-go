@@ -49,6 +49,7 @@ export interface PlayerPublicInfo {
 
 export type GameStatus =
   | "WAITING"
+  | "TOSS"
   | "DEALING"
   | "PLAYING"
   | "SHOW"
@@ -57,6 +58,18 @@ export type GameStatus =
   | "GAME_OVER";
 
 export type TurnPhase = "DRAW" | "DISCARD";
+
+export interface TossResult {
+  playerId: string;
+  username: string;
+  card: Card;
+  seatIndex: number;
+}
+
+export interface RoundHistoryEntry {
+  roundNumber: number;
+  scores: Record<string, number>;
+}
 
 export interface PlayerRanking {
   playerId: string;
@@ -79,9 +92,12 @@ export interface PublicGameState {
   turnEndsAt?: number | null;
   showTimeLimitSeconds?: number;
   showEndsAt?: number | null;
-  wildJoker: Card;
+  tossResults?: TossResult[];
+  tossEndsAt?: number | null;
+  wildJoker: Card | null;
   wildRank?: Rank;
   topDiscardCard: Card | null;
+  recentDiscards?: Card[];
   closedDeckCount: number;
   discardPileCount: number;
   players: PlayerPublicInfo[];
@@ -96,9 +112,30 @@ export interface PublicGameState {
   winnerMelds?: Card[][];
   submittedMeldPlayerIds?: string[];
   roundScores?: Record<string, { points: number; totalScore: number; reason: string }>;
+  roundHistory?: RoundHistoryEntry[];
   totalScores?: Record<string, number>;
   rankings?: PlayerRanking[];
 }
+
+export interface TableChatMessage {
+  id: string;
+  roomCode: string;
+  playerId: string;
+  username: string;
+  text: string;
+  timestamp: number;
+}
+
+export interface TableReaction {
+  id: string;
+  roomCode: string;
+  playerId: string;
+  username: string;
+  emoji: string;
+  timestamp: number;
+}
+
+export type FeltTheme = "emerald" | "royal" | "burgundy";
 
 export interface RoomInfo {
   id: string;

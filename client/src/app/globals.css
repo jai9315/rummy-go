@@ -6,33 +6,261 @@
   --foreground-rgb: 255, 255, 255;
   --background-start-rgb: 9, 9, 11;
   --background-end-rgb: 0, 0, 0;
+  --gold-light: #f6e09e;
+  --gold-mid: #d4af37;
+  --gold-dark: #8c6b1c;
+  --felt-center: #116947;
+  --felt-mid: #0a4930;
+  --felt-edge: #052619;
+}
+
+[data-felt-theme="emerald"] {
+  --felt-center: #116947;
+  --felt-mid: #0a4930;
+  --felt-edge: #052619;
+}
+
+[data-felt-theme="royal"] {
+  --felt-center: #134e7a;
+  --felt-mid: #0b3252;
+  --felt-edge: #061c30;
+}
+
+[data-felt-theme="burgundy"] {
+  --felt-center: #6b182c;
+  --felt-mid: #470f1d;
+  --felt-edge: #26070f;
 }
 
 body {
   color: rgb(var(--foreground-rgb));
   background: #09090b;
   min-height: 100dvh;
-  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, "Open Sans", "Helvetica Neue", sans-serif;
   user-select: none;
   overflow-x: hidden;
 }
 
-/* Custom scrollbar for cards tray */
+.font-serif-luxury {
+  font-family: "Playfair Display", Georgia, "Times New Roman", serif;
+}
+
+/* Luxury Royal 13 Dark Radial Backdrop */
+.royal-backdrop {
+  background: radial-gradient(circle at 50% 42%, #182235 0%, #0b101b 55%, #05080f 100%);
+}
+
+/* Luxury Oval Rummy Table Layers */
+.rummy-table-outer {
+  background: linear-gradient(145deg, #2b231d 0%, #14100d 45%, #3a2e1a 100%);
+  box-shadow:
+    0 24px 64px rgba(0, 0, 0, 0.85),
+    0 0 0 1px rgba(212, 175, 55, 0.35),
+    inset 0 2px 4px rgba(246, 224, 158, 0.25);
+}
+
+.rummy-table-rail {
+  background: linear-gradient(180deg, #1b1715 0%, #0e0c0b 100%);
+  box-shadow:
+    inset 0 4px 12px rgba(0, 0, 0, 0.9),
+    inset 0 -2px 6px rgba(212, 175, 55, 0.2);
+}
+
+.rummy-felt {
+  background: radial-gradient(
+    ellipse at 50% 46%,
+    var(--felt-center) 0%,
+    var(--felt-mid) 58%,
+    var(--felt-edge) 100%
+  );
+  box-shadow:
+    inset 0 0 60px rgba(0, 0, 0, 0.65),
+    inset 0 0 0 1px rgba(246, 224, 158, 0.14);
+  position: relative;
+}
+
+.rummy-felt::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  background-image: radial-gradient(rgba(255, 255, 255, 0.03) 1px, transparent 0);
+  background-size: 10px 10px;
+  pointer-events: none;
+}
+
+.rummy-felt-inner-ring {
+  position: absolute;
+  inset: 12px;
+  border-radius: inherit;
+  border: 1.5px solid rgba(212, 175, 55, 0.25);
+  box-shadow: inset 0 0 24px rgba(212, 175, 55, 0.06);
+  pointer-events: none;
+}
+
+/* Glassmorphism HUD panels */
+.glass-panel {
+  background: rgba(13, 19, 31, 0.72);
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.45);
+}
+
+.glass-pill {
+  background: rgba(15, 23, 42, 0.68);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+}
+
+/* Video Tile Styling & Active Gold Turn Timer */
+.video-tile {
+  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+}
+
+.video-tile:hover {
+  transform: translateY(-2px);
+}
+
+.video-feed-inner {
+  border-radius: 14px;
+  overflow: hidden;
+  border: 1.5px solid rgba(255, 255, 255, 0.14);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.55);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.video-tile.is-active-turn .video-feed-inner {
+  border-color: rgba(246, 224, 158, 0.9);
+  box-shadow:
+    0 0 24px rgba(212, 175, 55, 0.45),
+    0 12px 28px rgba(0, 0, 0, 0.65);
+}
+
+.turn-timer-svg {
+  position: absolute;
+  inset: -4px;
+  width: calc(100% + 8px);
+  height: calc(100% + 8px);
+  pointer-events: none;
+  z-index: 25;
+}
+
+.turn-timer-rect {
+  fill: none;
+  stroke: url(#goldTimerGrad);
+  stroke-width: 3.5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.25s linear;
+  filter: drop-shadow(0 0 6px rgba(246, 224, 158, 0.8));
+}
+
+/* Speaking Equalizer Bars */
+@keyframes eqBar {
+  0%, 100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar-1 {
+  animation: eqBar 0.7s ease-in-out infinite;
+  transform-origin: bottom;
+}
+
+.eq-bar-2 {
+  animation: eqBar 0.55s ease-in-out 0.15s infinite;
+  transform-origin: bottom;
+}
+
+.eq-bar-3 {
+  animation: eqBar 0.8s ease-in-out 0.3s infinite;
+  transform-origin: bottom;
+}
+
+/* Floating Emoji Reaction Animation */
+@keyframes floatEmoji {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 8px) scale(0.6);
+  }
+  18% {
+    opacity: 1;
+    transform: translate(-50%, -10px) scale(1.25);
+  }
+  80% {
+    opacity: 1;
+    transform: translate(-50%, -44px) scale(1);
+  }
+  100% {
+    opacity: 0;
+    transform: translate(-50%, -62px) scale(0.85);
+  }
+}
+
+.floating-emoji {
+  animation: floatEmoji 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Ornate Royal 13 Card Back */
+.card-back {
+  background:
+    radial-gradient(circle at 50% 50%, rgba(212, 175, 55, 0.25) 0%, transparent 55%),
+    repeating-linear-gradient(
+      45deg,
+      rgba(212, 175, 55, 0.12) 0px,
+      rgba(212, 175, 55, 0.12) 2px,
+      transparent 2px,
+      transparent 6px
+    ),
+    repeating-linear-gradient(
+      -45deg,
+      rgba(212, 175, 55, 0.12) 0px,
+      rgba(212, 175, 55, 0.12) 2px,
+      transparent 2px,
+      transparent 6px
+    ),
+    linear-gradient(145deg, #162447 0%, #0d162e 55%, #1f112d 100%);
+  border: 2px solid #e7d7b1;
+  box-shadow:
+    inset 0 0 0 3px #0d162e,
+    inset 0 0 0 4.5px rgba(212, 175, 55, 0.55),
+    0 8px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* Draw Phase Deck Highlight Pulse */
+@keyframes deckPulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(246, 224, 158, 0.55), 0 10px 24px rgba(0, 0, 0, 0.5);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(246, 224, 158, 0), 0 10px 28px rgba(212, 175, 55, 0.45);
+  }
+}
+
+.draw-highlight {
+  animation: deckPulse 1.6s infinite;
+}
+
+/* Custom scrollbar for cards tray & chat */
 ::-webkit-scrollbar {
   height: 6px;
   width: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: rgba(0, 0, 0, 0.4);
+  background: rgba(0, 0, 0, 0.35);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: rgba(212, 175, 55, 0.3);
+  background: rgba(212, 175, 55, 0.35);
   border-radius: 4px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: rgba(212, 175, 55, 0.6);
+  background: rgba(212, 175, 55, 0.65);
 }

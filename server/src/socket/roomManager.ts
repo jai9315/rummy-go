@@ -1,4 +1,5 @@
 import bcrypt from "bcryptjs";
+import crypto from "crypto";
 import { Server, Socket } from "socket.io";
 import { prisma } from "../db/prisma";
 import { Game } from "../engine/Game";
@@ -29,6 +30,7 @@ export interface RoomManagerOptions {
   hostDisconnectGraceMs?: number;
   turnTimeLimitSeconds?: number;
   showTimeLimitSeconds?: number;
+  tossDurationMs?: number;
 }
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -43,6 +45,7 @@ export class RoomManager {
   private hostDisconnectGraceMs: number;
   private turnTimeLimitSeconds: number;
   private showTimeLimitSeconds: number;
+  private tossDurationMs: number;
 
   // roomCode -> Map of userId -> ActiveLobbyPlayer
   private lobbyPlayers: Map<string, Map<string, ActiveLobbyPlayer>> = new Map();
@@ -68,6 +71,17 @@ export class RoomManager {
     this.hostDisconnectGraceMs = options.hostDisconnectGraceMs ?? 15000;
     this.turnTimeLimitSeconds = options.turnTimeLimitSeconds ?? 30;
     this.showTimeLimitSeconds = options.showTimeLimitSeconds ?? 30;
+    const envTossMs =
+      process.env.TOSS_DURATION_MS !== undefined &&
+      process.env.TOSS_DURATION_MS.trim() !== ""
+        ? Number(process.env.TOSS_DURATION_MS)
+        : NaN;
+    this.tossDurationMs =
+      options.tossDurationMs !== undefined
+        ? Math.max(0, options.tossDurationMs)
+        : !Number.isNaN(envTossMs)
+        ? Math.max(0, envTossMs)
+        : 3500;
   }
 
   /**
@@ -369,10 +383,12 @@ export class RoomManager {
           if (game && game.getPlayer(user.userId) && !playerReturnedToLobby) {
             game.setPlayerConnection(user.userId, "CONNECTED");
 
-            // If turn/show timer was paused because all players had disconnected,
+            // If turn/show/toss timer was paused because all players had disconnected,
             // restart it automatically on reconnect!
             if (
-              (game.status === "PLAYING" || game.status === "SHOW") &&
+              (game.status === "TOSS" ||
+                game.status === "PLAYING" ||
+                game.status === "SHOW") &&
               !game.isTimerRunning()
             ) {
               game.resumeTimer();
@@ -384,14 +400,16 @@ export class RoomManager {
             // Also emit directly to reconnecting socket in case mock IO doesn't route room broadcasts
             socket.emit("GAME_STATE_UPDATE", refreshedState);
 
-            // CRITICAL: Emit private cards ONLY to this player
+            // CRITICAL: Emit private cards ONLY to this player (once cards have been dealt)
             const privateCards = game.getPlayerCards(user.userId);
-            socket.emit("PRIVATE_HAND_UPDATE", {
-              type: "PRIVATE_HAND_UPDATE",
-              playerId: user.userId,
-              cards: privateCards,
-              timestamp: Date.now(),
-            });
+            if (privateCards.length > 0) {
+              socket.emit("PRIVATE_HAND_UPDATE", {
+                type: "PRIVATE_HAND_UPDATE",
+                playerId: user.userId,
+                cards: privateCards,
+                timestamp: Date.now(),
+              });
+            }
           }
         } catch (err: unknown) {
           console.error("JOIN_ROOM error:", err);
@@ -427,7 +445,11 @@ export class RoomManager {
       if (game) {
         if (game.status === "WAITING") {
           game.removePlayer(userId);
-        } else if (game.status === "PLAYING" || game.status === "SHOW") {
+        } else if (
+          game.status === "TOSS" ||
+          game.status === "PLAYING" ||
+          game.status === "SHOW"
+        ) {
           game.setPlayerConnection(userId, "DISCONNECTED");
           const publicState = game.getPublicState();
           this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", publicState);
@@ -445,7 +467,12 @@ export class RoomManager {
         this.clearHostTransferTimer(roomCode);
         this.lobbyPlayers.delete(roomCode);
         this.returnedToLobby.delete(roomCode);
-        if (game && (game.status === "WAITING" || game.status === "GAME_OVER")) {
+        if (
+          game &&
+          (game.status === "WAITING" ||
+            game.status === "TOSS" ||
+            game.status === "GAME_OVER")
+        ) {
           game.stopTimer();
           this.activeGames.delete(roomCode);
         }
@@ -622,12 +649,23 @@ export class RoomManager {
         const game = new Game(`game_${roomCode}_${Date.now()}`, room.id, roomCode, {
           turnTimeLimitSeconds: this.getRoomTurnTimeLimit(roomCode),
           showTimeLimitSeconds: this.showTimeLimitSeconds,
+          tossDurationMs: this.tossDurationMs,
           roundCount: Math.max(1, room.roundCount || 1),
           entryPoints: room.entryPoints,
           onStateUpdate: (state) => {
             console.log(
               `START_GAME: onStateUpdate called, status=${state.status}, round=${state.roundNumber}/${state.roundCount}, turn=${state.currentTurnPlayerId}`
             );
+            // Keep lobby seat numbers synced with toss-determined seat order
+            if (state.status === "TOSS") {
+              const lMap = this.lobbyPlayers.get(roomCode);
+              if (lMap) {
+                for (const sp of state.players) {
+                  const lp = lMap.get(sp.id);
+                  if (lp) lp.seatNumber = sp.seatNumber;
+                }
+              }
+            }
             this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", state);
             if (state.status === "ROUND_END" || state.status === "GAME_OVER") {
               void this.persistRoundEnd(game, state);
@@ -666,18 +704,18 @@ export class RoomManager {
           data: { status: "PLAYING" },
         });
 
-        // Only now register the game and start the round
+        // Only now register the game and start with the Toss phase
         this.activeGames.set(roomCode, game);
         console.log(
           `START_GAME: game ${game.id} registered in room ${roomCode} with ${activePlayers.length} players`
         );
         try {
-          game.startRound();
+          game.startToss();
           console.log(
-            `START_GAME: game ${game.id} startRound() complete, status=${game.status}, turn=${game.getCurrentTurnPlayerId()}`
+            `START_GAME: game ${game.id} startToss() complete, status=${game.status}, turn=${game.getCurrentTurnPlayerId()}`
           );
         } catch (roundErr: unknown) {
-          console.error(`START_GAME: game ${game.id} startRound() failed:`, roundErr);
+          console.error(`START_GAME: game ${game.id} startToss() failed:`, roundErr);
           this.activeGames.delete(roomCode);
           throw roundErr;
         }
@@ -979,6 +1017,47 @@ export class RoomManager {
       }
     );
 
+    // Event: CHAT_MESSAGE (Real-time room-scoped table chat)
+    socket.on("CHAT_MESSAGE", (payload: { text?: unknown }) => {
+      const session = this.socketSessions.get(socket.id);
+      if (!session) {
+        socket.emit("ERROR", { message: "Join a room to send chat messages" });
+        return;
+      }
+      const rawText = typeof payload?.text === "string" ? payload.text.trim() : "";
+      if (!rawText) return;
+      const text = rawText.slice(0, 300);
+
+      this.io.to(`room_${session.roomCode}`).emit("CHAT_MESSAGE", {
+        id: `chat_${Date.now()}_${crypto.randomInt(1000, 9999)}`,
+        roomCode: session.roomCode,
+        playerId: user.userId,
+        username: user.username,
+        text,
+        timestamp: Date.now(),
+      });
+    });
+
+    // Event: SEND_REACTION (Real-time room-scoped quick emoji reaction)
+    socket.on("SEND_REACTION", (payload: { emoji?: unknown }) => {
+      const session = this.socketSessions.get(socket.id);
+      if (!session) {
+        socket.emit("ERROR", { message: "Join a room to send reactions" });
+        return;
+      }
+      const rawEmoji = typeof payload?.emoji === "string" ? payload.emoji.trim() : "";
+      if (!rawEmoji || rawEmoji.length > 8) return;
+
+      this.io.to(`room_${session.roomCode}`).emit("SEND_REACTION", {
+        id: `react_${Date.now()}_${crypto.randomInt(1000, 9999)}`,
+        roomCode: session.roomCode,
+        playerId: user.userId,
+        username: user.username,
+        emoji: rawEmoji,
+        timestamp: Date.now(),
+      });
+    });
+
     // Event: DISCONNECT
     socket.on("disconnect", () => {
       const session = this.socketSessions.get(socket.id);
@@ -1042,9 +1121,13 @@ export class RoomManager {
           const publicState = game.getPublicState();
           this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", publicState);
 
-          // Pause turn/show timer if no active (non-dropped) player is connected,
+          // Pause turn/show/toss timer if no active (non-dropped) player is connected,
           // preventing the timer from firing for an abandoned game.
-          if (game.status === "PLAYING" || game.status === "SHOW") {
+          if (
+            game.status === "TOSS" ||
+            game.status === "PLAYING" ||
+            game.status === "SHOW"
+          ) {
             const anyConnected = publicState.players.some(
               (p) => !p.hasDropped && p.connectionStatus === "CONNECTED"
             );

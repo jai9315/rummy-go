@@ -8,10 +8,13 @@ interface VideoStoreState {
   isMicMuted: boolean;
   isCameraOff: boolean;
   isVideoCollapsed: boolean;
+  isCompactVideo: boolean;
   cameraPermissionDenied: boolean;
   micPermissionDenied: boolean;
   connectionError: string | null;
   activeSpeakers: string[];
+  mutedRemotePlayerIds: string[];
+  spotlightPlayerId: string | null;
   videoStatus: VideoStatus;
   videoStatusLabel: string;
   retryNonce: number;
@@ -22,6 +25,9 @@ interface VideoStoreState {
   toggleMic: () => void;
   toggleCamera: () => void;
   toggleCollapsed: () => void;
+  toggleCompactVideo: () => void;
+  toggleMuteRemotePlayer: (playerId: string) => void;
+  setSpotlightPlayerId: (playerId: string | null) => void;
   setCameraPermissionDenied: (denied: boolean) => void;
   setMicPermissionDenied: (denied: boolean) => void;
   setConnectionError: (error: string | null) => void;
@@ -37,10 +43,13 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
   isMicMuted: false,
   isCameraOff: false,
   isVideoCollapsed: false,
+  isCompactVideo: false,
   cameraPermissionDenied: false,
   micPermissionDenied: false,
   connectionError: null,
   activeSpeakers: [],
+  mutedRemotePlayerIds: [],
+  spotlightPlayerId: null,
   videoStatus: "connecting",
   videoStatusLabel: "Connecting...",
   retryNonce: 0,
@@ -52,6 +61,14 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
   toggleMic: () => set((state) => ({ isMicMuted: !state.isMicMuted })),
   toggleCamera: () => set((state) => ({ isCameraOff: !state.isCameraOff })),
   toggleCollapsed: () => set((state) => ({ isVideoCollapsed: !state.isVideoCollapsed })),
+  toggleCompactVideo: () => set((state) => ({ isCompactVideo: !state.isCompactVideo })),
+  toggleMuteRemotePlayer: (playerId) =>
+    set((state) => ({
+      mutedRemotePlayerIds: state.mutedRemotePlayerIds.includes(playerId)
+        ? state.mutedRemotePlayerIds.filter((id) => id !== playerId)
+        : [...state.mutedRemotePlayerIds, playerId],
+    })),
+  setSpotlightPlayerId: (spotlightPlayerId) => set({ spotlightPlayerId }),
   setCameraPermissionDenied: (denied) =>
     set((state) => ({
       cameraPermissionDenied: denied,
@@ -96,6 +113,8 @@ export const useVideoStore = create<VideoStoreState>((set) => ({
       micPermissionDenied: false,
       connectionError: null,
       activeSpeakers: [],
+      mutedRemotePlayerIds: [],
+      spotlightPlayerId: null,
       videoStatus: "connecting",
       videoStatusLabel: "Connecting...",
     }),

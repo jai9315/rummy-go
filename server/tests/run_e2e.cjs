@@ -93,6 +93,7 @@ async function main() {
       LIVEKIT_API_KEY: "devkey",
       LIVEKIT_API_SECRET: "secret_for_rummy_e2e_runner_32chars",
       LIVEKIT_URL: "ws://localhost:7880",
+      TOSS_DURATION_MS: "150",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });

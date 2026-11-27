@@ -49,20 +49,24 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
 
   const badgeConfig = {
     PURE_SEQUENCE: {
-      label: "Pure Seq ✓",
-      color: "bg-emerald-600/90 text-white border-emerald-400",
+      label: "Pure Sequence ✓",
+      shortLabel: "Pure ✓",
+      color: "bg-emerald-500/25 text-emerald-200 border-emerald-400/60",
     },
     IMPURE_SEQUENCE: {
-      label: "Impure Seq ✓",
-      color: "bg-blue-600/90 text-white border-blue-400",
+      label: "Impure Sequence ✓",
+      shortLabel: "Impure ✓",
+      color: "bg-sky-500/25 text-sky-200 border-sky-400/60",
     },
     SET: {
       label: "Set ✓",
-      color: "bg-purple-600/90 text-white border-purple-400",
+      shortLabel: "Set ✓",
+      color: "bg-purple-500/25 text-purple-200 border-purple-400/60",
     },
     INVALID: {
-      label: cards.length >= 3 ? "Invalid ✗" : `${cards.length} cards`,
-      color: "bg-zinc-800/80 text-zinc-300 border-zinc-600",
+      label: "Ungrouped",
+      shortLabel: `${cards.length}c`,
+      color: "bg-slate-800/80 text-slate-300 border-white/15",
     },
   }[meld.type];
 
@@ -96,35 +100,39 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
       data-group-index={groupIndex}
       onDragOver={handleGroupDragOver}
       onDrop={handleGroupDrop}
-      className={`flex flex-col items-center p-1.5 mobile-landscape:p-1 rounded-xl mobile-landscape:rounded-lg backdrop-blur-sm border shadow-lg transition-colors shrink-0 ${
+      className={`flex flex-col items-center px-1.5 py-1 mobile-landscape:px-1 mobile-landscape:py-0.5 rounded-xl mobile-landscape:rounded-lg border transition-colors shrink-0 ${
         isGroupTargeted
-          ? "bg-emerald-900/50 border-amber-400 ring-2 ring-amber-400/50"
-          : "bg-zinc-900/70 border-zinc-700/60"
+          ? "bg-emerald-900/50 border-[#f6e09e] ring-2 ring-[#f6e09e]/50"
+          : "bg-slate-950/45 border-white/10"
       }`}
     >
-      {/* Group Status Pill & Optional Ungroup Button */}
-      <div className="flex items-center gap-1 mb-1 mobile-landscape:mb-0.5">
+      {/* Colored Meld Validation Pill & Optional Ungroup Button */}
+      <div className="flex items-center gap-1 mb-0.5">
         <span
-          className={`text-[10px] font-semibold px-2 py-0.5 mobile-landscape:px-1.5 rounded-full border shadow-sm leading-none ${badgeConfig.color}`}
+          className={`text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-bold px-2 py-0.5 mobile-landscape:px-1.5 rounded-full border leading-none whitespace-nowrap ${badgeConfig.color}`}
         >
-          {badgeConfig.label}
+          <span className="hidden sm:inline mobile-landscape:hidden">
+            {badgeConfig.label}
+          </span>
+          <span className="sm:hidden mobile-landscape:inline">
+            {badgeConfig.shortLabel}
+          </span>
         </span>
         {onUngroup && (
           <button
             type="button"
             onClick={onUngroup}
-            className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-zinc-800 hover:bg-zinc-700 text-zinc-300 hover:text-amber-300 border border-zinc-600 text-[10px] font-semibold leading-none transition"
+            className="flex items-center gap-0.5 px-1 py-0.5 rounded-full bg-slate-800/80 hover:bg-slate-700 text-slate-300 hover:text-amber-200 border border-white/10 text-[9px] font-semibold leading-none transition"
             title="Ungroup cards back to hand"
             aria-label={`Ungroup group ${groupIndex + 1}`}
           >
             <Ungroup className="w-2.5 h-2.5" />
-            <span className="hidden sm:inline mobile-landscape:hidden">Ungroup</span>
           </button>
         )}
       </div>
 
-      {/* Cards in this meld: tight responsive negative overlap with top lift room */}
-      <div className="flex items-end px-1 pt-2.5 pb-0.5 mobile-landscape:px-0.5 mobile-landscape:pt-2 mobile-landscape:pb-0">
+      {/* Cards with tight negative horizontal overlap & lift clearance */}
+      <div className="flex items-end px-0.5 pt-2.5 pb-0.5 mobile-landscape:pt-2 mobile-landscape:pb-0">
         <AnimatePresence mode="popLayout">
           {cards.map((card, cardIdx) => {
             const isBeingDragged = draggingCardId === card.id;
@@ -160,7 +168,8 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
                 onDrop={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
-                  const cardId = e.dataTransfer.getData("text/plain") || draggingCardId;
+                  const cardId =
+                    e.dataTransfer.getData("text/plain") || draggingCardId;
                   if (cardId) {
                     onDropCard(cardId, groupIndex, cardIdx);
                   }
@@ -172,8 +181,10 @@ export const MeldGroupView: React.FC<MeldGroupProps> = ({
                 onTouchEnd={onTouchEndCard}
                 onTouchCancel={onTouchEndCard}
                 className={`relative z-10 hover:z-30 transition-transform touch-pan-x ${
-                  cardIdx > 0 ? "-ml-4 sm:-ml-5 xl:-ml-6 mobile-landscape:-ml-3.5" : ""
-                } ${isCardDropTarget ? "pl-2 border-l-2 border-amber-400" : ""}`}
+                  cardIdx > 0
+                    ? "-ml-4 sm:-ml-5 xl:-ml-6 mobile-landscape:-ml-3.5"
+                    : ""
+                } ${isCardDropTarget ? "pl-2 border-l-2 border-[#f6e09e]" : ""}`}
               >
                 <Card
                   card={card}

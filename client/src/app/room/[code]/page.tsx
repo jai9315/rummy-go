@@ -116,6 +116,8 @@ export default function RoomPage() {
     dropGame,
     sortHand,
     inviteFriend,
+    sendChatMessage,
+    sendReaction,
   } = useSocket(roomCode, {
     autoJoin: canAutoJoin,
     password: submittedPassword,
@@ -369,10 +371,11 @@ export default function RoomPage() {
     );
   }
 
-  // Active game, Show phase, Round End, or Game Over: render Table
+  // Active game, Toss, Show phase, Round End, or Game Over: render Royal 13 Table
   if (
     gameState &&
-    (gameState.status === "PLAYING" ||
+    (gameState.status === "TOSS" ||
+      gameState.status === "PLAYING" ||
       gameState.status === "DEALING" ||
       gameState.status === "SHOW" ||
       gameState.status === "DECLARED" ||
@@ -392,6 +395,8 @@ export default function RoomPage() {
           onReturnToLobby={returnToLobby}
           onDrop={dropGame}
           onSort={sortHand}
+          onSendChat={sendChatMessage}
+          onSendReaction={sendReaction}
           onExit={handleExitRoom}
         />
       </div>

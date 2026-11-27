@@ -1042,3 +1042,99 @@ test("turnEndsAt is populated while running and stopTimer/resumeTimer pauses and
   game.stopTimer();
 });
 
+test("TOSS card priority ranks Ace high -> 2 low and breaks rank ties by Spades > Hearts > Diamonds > Clubs", () => {
+  const aS = makeCard("t1", "SPADES", "A");
+  const aH = makeCard("t2", "HEARTS", "A");
+  const aD = makeCard("t3", "DIAMONDS", "A");
+  const aC = makeCard("t4", "CLUBS", "A");
+  const kS = makeCard("t5", "SPADES", "K");
+  const tenH = makeCard("t6", "HEARTS", "10");
+  const twoC = makeCard("t7", "CLUBS", "2");
+
+  const ordered = [aS, aH, aD, aC, kS, tenH, twoC];
+  for (let i = 0; i < ordered.length - 1; i++) {
+    assert.ok(
+      Game.getTossCardPriority(ordered[i]) > Game.getTossCardPriority(ordered[i + 1]),
+      `${ordered[i].rank}${ordered[i].suit} must outrank ${ordered[i + 1].rank}${ordered[i + 1].suit}`
+    );
+  }
+});
+
+test("TOSS phase draws 1 unique non-joker card per player, orders seats by priority, reshuffles, deals 13 cards, and gives first turn to #1 winner", async () => {
+  const states = [];
+  const privateHands = new Map();
+  const game = new Game("game-toss-unit", "room-1", "TOSS01", {
+    tossDurationMs: 80,
+    turnTimeLimitSeconds: 30,
+    onStateUpdate: (s) => states.push(s),
+    onPrivateUpdate: (pid, cards) => privateHands.set(pid, cards),
+  });
+
+  game.addPlayer("p1", "Alice", "", 1);
+  game.addPlayer("p2", "Bob", "", 2);
+  game.addPlayer("p3", "Charlie", "", 3);
+  game.addPlayer("p4", "Diana", "", 4);
+  for (const pid of ["p1", "p2", "p3", "p4"]) {
+    game.setPlayerReady(pid, true);
+  }
+
+  game.startToss();
+
+  // Immediately after startToss(), status must be TOSS with 4 unique non-joker toss cards sorted by priority
+  const tossState = states.find((s) => s.status === "TOSS");
+  assert.ok(tossState, "Must emit TOSS public state");
+  assert.strictEqual(game.status, "TOSS");
+  assert.ok(
+    typeof tossState.tossEndsAt === "number" && tossState.tossEndsAt > Date.now() - 50,
+    "tossEndsAt must be populated during TOSS"
+  );
+  assert.strictEqual(tossState.tossResults.length, 4, "Every player must receive 1 toss card");
+
+  const seenCardKeys = new Set();
+  for (let i = 0; i < tossState.tossResults.length; i++) {
+    const tr = tossState.tossResults[i];
+    assert.strictEqual(tr.seatIndex, i, "seatIndex must be 0..N-1 in priority order");
+    assert.strictEqual(tr.card.isPrintedJoker, false, "Toss cards must exclude Printed Jokers");
+    const key = `${tr.card.suit}_${tr.card.rank}`;
+    assert.strictEqual(seenCardKeys.has(key), false, "Every player must draw a unique toss card");
+    seenCardKeys.add(key);
+
+    if (i > 0) {
+      const prevPriority = Game.getTossCardPriority(tossState.tossResults[i - 1].card);
+      const currPriority = Game.getTossCardPriority(tr.card);
+      assert.ok(
+        prevPriority > currPriority,
+        "tossResults must be sorted strictly descending by rank+suit priority"
+      );
+    }
+  }
+
+  const expectedFirstTurnPlayerId = tossState.tossResults[0].playerId;
+
+  // Wait for toss window to auto-complete and transition into PLAYING
+  await new Promise((r) => setTimeout(r, 160));
+
+  const playingState = states[states.length - 1];
+  assert.strictEqual(playingState.status, "PLAYING", "Game must transition automatically from TOSS to PLAYING");
+  assert.strictEqual(
+    playingState.currentTurnPlayerId,
+    expectedFirstTurnPlayerId,
+    "Highest-priority toss winner must receive the first turn"
+  );
+  assert.ok(playingState.wildJoker, "Wildcard Joker must be cut after reshuffle");
+  assert.ok(playingState.topDiscardCard, "Initial open discard card must be placed");
+  assert.strictEqual(privateHands.size, 4, "All 4 players must receive private hands");
+  for (const pid of ["p1", "p2", "p3", "p4"]) {
+    assert.strictEqual(privateHands.get(pid).length, 13, `Player ${pid} must receive 13 dealt cards`);
+  }
+
+  // Verify players array order matches toss priority order (seatNumber 1..4)
+  for (let i = 0; i < tossState.tossResults.length; i++) {
+    assert.strictEqual(playingState.players[i].id, tossState.tossResults[i].playerId);
+    assert.strictEqual(playingState.players[i].seatNumber, i + 1);
+  }
+
+  game.stopTimer();
+});
+
+

@@ -4,7 +4,14 @@ import { getSocketServerUrl } from "../lib/serverUrl";
 import { soundEffects } from "../lib/soundEffects";
 import { useAuthStore } from "../store/useAuthStore";
 import { useGameStore } from "../store/useGameStore";
-import { Card, LobbyPlayer, PublicGameState, RoomInvite } from "../types";
+import {
+  Card,
+  LobbyPlayer,
+  PublicGameState,
+  RoomInvite,
+  TableChatMessage,
+  TableReaction,
+} from "../types";
 
 export interface UseSocketOptions {
   autoJoin?: boolean;
@@ -32,6 +39,9 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     setError,
     setKickedMessage,
     setPendingInvite,
+    addChatMessage,
+    addReaction,
+    removeReaction,
     returnToLobby: resetToLobbyStore,
   } = useGameStore();
 
@@ -97,6 +107,17 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
       soundEffects.playInviteChime(useGameStore.getState().isMuted);
     });
 
+    socket.on("CHAT_MESSAGE", (msg: TableChatMessage) => {
+      addChatMessage(msg);
+    });
+
+    socket.on("SEND_REACTION", (reaction: TableReaction) => {
+      addReaction(reaction);
+      setTimeout(() => {
+        removeReaction(reaction.id);
+      }, 2300);
+    });
+
     socket.on("ERROR", (err: { message: string }) => {
       setError(err.message);
       if (errorTimerRef.current) {
@@ -125,6 +146,9 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     setError,
     setKickedMessage,
     setPendingInvite,
+    addChatMessage,
+    addReaction,
+    removeReaction,
     resetToLobbyStore,
   ]);
 
@@ -219,6 +243,17 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     });
   }, []);
 
+  const sendChatMessage = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    socketRef.current?.emit("CHAT_MESSAGE", { text: trimmed });
+  }, []);
+
+  const sendReaction = useCallback((emoji: string) => {
+    if (!emoji) return;
+    socketRef.current?.emit("SEND_REACTION", { emoji });
+  }, []);
+
   return {
     socket: socketRef.current,
     joinRoom,
@@ -235,5 +270,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     dropGame,
     sortHand,
     inviteFriend,
+    sendChatMessage,
+    sendReaction,
   };
 }
