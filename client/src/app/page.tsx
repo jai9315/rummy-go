@@ -32,7 +32,7 @@ export default function HomePage() {
   const [joinCode, setJoinCode] = useState("");
   const [roomName, setRoomName] = useState("");
   const [maxPlayers, setMaxPlayers] = useState(6);
-  const [roundCount, setRoundCount] = useState(1);
+  const [targetPoints, setTargetPoints] = useState<101 | 201>(101);
   const [turnTimeLimitSeconds, setTurnTimeLimitSeconds] = useState(30);
   const [entryPoints, setEntryPoints] = useState(80);
   const [roomPassword, setRoomPassword] = useState("");
@@ -70,7 +70,7 @@ export default function HomePage() {
       const res = await api.createRoom({
         roomName: roomName || `${user?.username || "Player"}'s Room`,
         maxPlayers,
-        roundCount,
+        targetPoints,
         entryPoints,
         turnTimeLimitSeconds,
         password: roomPassword.trim() || undefined,
@@ -410,21 +410,28 @@ export default function HomePage() {
 
               <div>
                 <label className="block text-xs font-bold text-zinc-300 uppercase tracking-wider mb-1">
-                  Rounds
+                  Pool Target Points
                 </label>
-                <div className="grid grid-cols-4 gap-2">
-                  {[1, 2, 3, 5].map((num) => (
+                <div className="grid grid-cols-2 gap-2.5">
+                  {([101, 201] as const).map((pts) => (
                     <button
-                      key={num}
+                      key={pts}
                       type="button"
-                      onClick={() => setRoundCount(num)}
-                      className={`py-2 rounded-xl text-xs font-bold border transition ${
-                        roundCount === num
+                      onClick={() => setTargetPoints(pts)}
+                      className={`py-2.5 px-3 rounded-xl border transition text-left ${
+                        targetPoints === pts
                           ? "bg-amber-500 text-zinc-950 border-amber-400 shadow"
-                          : "bg-zinc-950 text-zinc-400 border-zinc-800 hover:text-white"
+                          : "bg-zinc-950 text-zinc-300 border-zinc-800 hover:text-white hover:border-zinc-700"
                       }`}
                     >
-                      {num} {num === 1 ? "Round" : "Rounds"}
+                      <div className="text-xs font-black">{pts} Points Pool</div>
+                      <div
+                        className={`text-[10px] font-medium ${
+                          targetPoints === pts ? "text-zinc-900/80" : "text-zinc-500"
+                        }`}
+                      >
+                        Eliminated at {pts}+ pts
+                      </div>
                     </button>
                   ))}
                 </div>

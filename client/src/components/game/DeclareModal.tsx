@@ -42,8 +42,9 @@ export const DeclareModal: React.FC<DeclareModalProps> = ({
 
   const totalCardsInMelds = filteredMelds.reduce((sum, g) => sum + g.length, 0);
 
-  // Evaluate each meld
-  const evaluatedMelds = filteredMelds.map((g) => ClientEvaluator.evaluateMeld(g));
+  // Delegate validation to ClientEvaluator.validateDeclaration() for 100% server parity
+  const declarationCheck = ClientEvaluator.validateDeclaration(filteredMelds);
+  const evaluatedMelds = declarationCheck.evaluatedMelds;
   const pureCount = evaluatedMelds.filter((m) => m.type === "PURE_SEQUENCE").length;
   const impureCount = evaluatedMelds.filter((m) => m.type === "IMPURE_SEQUENCE").length;
   const totalSequences = pureCount + impureCount;
@@ -52,8 +53,7 @@ export const DeclareModal: React.FC<DeclareModalProps> = ({
   const hasPureSequence = pureCount >= 1;
   const hasTwoSequences = totalSequences >= 2;
   const hasExact13Cards = totalCardsInMelds === 13;
-  const canDeclare =
-    hasPureSequence && hasTwoSequences && allGroupsValid && hasExact13Cards && selectedDeclareCardId;
+  const canDeclare = Boolean(declarationCheck.isValid && selectedDeclareCardId);
 
   const handleConfirm = () => {
     if (canDeclare && selectedDeclareCardId) {

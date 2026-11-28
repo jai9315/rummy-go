@@ -40,6 +40,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     setKickedMessage,
     setPendingInvite,
     addChatMessage,
+    clearChatBubble,
     addReaction,
     removeReaction,
     returnToLobby: resetToLobbyStore,
@@ -109,6 +110,9 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
 
     socket.on("CHAT_MESSAGE", (msg: TableChatMessage) => {
       addChatMessage(msg);
+      setTimeout(() => {
+        clearChatBubble(msg.playerId, msg.id);
+      }, 4500);
     });
 
     socket.on("SEND_REACTION", (reaction: TableReaction) => {
@@ -147,6 +151,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     setKickedMessage,
     setPendingInvite,
     addChatMessage,
+    clearChatBubble,
     addReaction,
     removeReaction,
     resetToLobbyStore,
@@ -206,6 +211,10 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     socketRef.current?.emit("NEXT_ROUND");
   }, []);
 
+  const restartMatch = useCallback(() => {
+    socketRef.current?.emit("RESTART_MATCH");
+  }, []);
+
   const returnToLobby = useCallback(() => {
     socketRef.current?.emit("RETURN_TO_LOBBY");
     useGameStore.getState().returnToLobby();
@@ -262,6 +271,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     toggleReady,
     startGame,
     nextRound,
+    restartMatch,
     returnToLobby,
     drawCard,
     discardCard,

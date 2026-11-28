@@ -20,20 +20,23 @@ const STANDARD_RANKS: Rank[] = [
 
 export class Deck {
   private cards: Card[] = [];
+  public deckCount: number = 2;
 
-  constructor() {
-    this.reset();
+  constructor(deckCount: number = 2) {
+    this.reset(deckCount);
   }
 
   /**
-   * Resets deck to standard Indian Rummy 2-deck configuration (108 cards):
-   * 2 standard 52-card decks (104 cards) + 2 printed jokers per deck (4 jokers total)
+   * Resets deck to 1-deck (54 cards: 52 + 2 Printed Jokers) or
+   * 2-deck (108 cards: 104 + 4 Printed Jokers) Indian Rummy configuration.
    */
-  public reset(): void {
+  public reset(deckCount: number = 2): void {
+    const normalizedCount = deckCount === 1 ? 1 : 2;
+    this.deckCount = normalizedCount;
     this.cards = [];
     let idCounter = 1;
 
-    for (let deckIdx = 1; deckIdx <= 2; deckIdx++) {
+    for (let deckIdx = 1; deckIdx <= normalizedCount; deckIdx++) {
       for (const suit of STANDARD_SUITS) {
         for (const rank of STANDARD_RANKS) {
           this.cards.push({

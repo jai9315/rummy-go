@@ -63,6 +63,10 @@ export interface PlayerInternalState {
   isReady: boolean;
   connectionStatus: "CONNECTED" | "DISCONNECTED";
   hasDropped: boolean;
+  isEliminated: boolean;
+  offlineTurnsMissed: number;
+  offlineRoundsMissed: number;
+  canPlayCurrentRound: boolean;
   score: number;
   totalScore: number;
   consecutiveTimeouts: number;
@@ -76,9 +80,11 @@ export interface GameOptions {
   tossDurationMs?: number;
   entryPoints?: number;
   roundCount?: number;
+  targetPoints?: number;
   onStateUpdate?: (state: PublicGameState) => void;
   onPrivateUpdate?: (playerId: string, cards: Card[]) => void;
   onTurnTimeout?: (playerId: string) => void;
+  onRemoveOfflinePlayer?: (playerId: string) => void;
 }
 
 export class Game {
@@ -86,12 +92,15 @@ export class Game {
   public readonly roomId: string;
   public readonly roomCode: string;
   public readonly roundCount: number;
+  public readonly targetPoints: number;
+  public readonly poolMode: boolean;
   public roundNumber: number = 1;
   public currentRoundGameId: string;
   public status: GameStatus = "WAITING";
 
   private players: Map<string, PlayerInternalState> = new Map();
   private turnOrder: string[] = [];
+  private roundStarterIndex: number = 0;
   private currentTurnIndex: number = 0;
   private turnPhase: TurnPhase = "DRAW";
 
@@ -110,9 +119,11 @@ export class Game {
   private turnTimeRemaining: number;
   private turnEndsAt: number | null = null;
   private showEndsAt: number | null = null;
+  private nextRoundEndsAt: number | null = null;
 
   private winnerId?: string;
   private winnerMelds?: Card[][];
+  private roundRevealedHands?: Record<string, Card[][]>;
   private submittedMeldPlayerIds: Set<string> = new Set();
   private roundScores: Record<string, { points: number; totalScore: number; reason: string }> = {};
   private roundHistory: RoundHistoryEntry[] = [];
@@ -121,6 +132,7 @@ export class Game {
   private onStateUpdate?: (state: PublicGameState) => void;
   private onPrivateUpdate?: (playerId: string, cards: Card[]) => void;
   private onTurnTimeout?: (playerId: string) => void;
+  private onRemoveOfflinePlayer?: (playerId: string) => void;
 
   constructor(
     id: string,
@@ -132,6 +144,12 @@ export class Game {
     this.currentRoundGameId = id;
     this.roomId = roomId;
     this.roomCode = roomCode;
+    this.poolMode =
+      options.targetPoints !== undefined || options.roundCount === undefined;
+    this.targetPoints = Math.max(
+      1,
+      Math.floor(options.targetPoints ?? 101)
+    );
     this.roundCount = Math.max(1, options.roundCount ?? 1);
     this.turnTimeLimit = options.turnTimeLimitSeconds || 30;
     this.showTimeLimit = options.showTimeLimitSeconds || 30;
@@ -141,6 +159,7 @@ export class Game {
     this.onStateUpdate = options.onStateUpdate;
     this.onPrivateUpdate = options.onPrivateUpdate;
     this.onTurnTimeout = options.onTurnTimeout;
+    this.onRemoveOfflinePlayer = options.onRemoveOfflinePlayer;
   }
 
   /**
@@ -175,6 +194,10 @@ export class Game {
       isReady: false,
       connectionStatus: "CONNECTED",
       hasDropped: false,
+      isEliminated: false,
+      offlineTurnsMissed: 0,
+      offlineRoundsMissed: 0,
+      canPlayCurrentRound: true,
       score: 0,
       totalScore: 0,
       consecutiveTimeouts: 0,
@@ -199,9 +222,25 @@ export class Game {
     status: "CONNECTED" | "DISCONNECTED"
   ): void {
     const player = this.players.get(playerId);
-    if (player) {
-      player.connectionStatus = status;
+    if (!player) return;
+    player.connectionStatus = status;
+    if (status === "CONNECTED") {
+      player.offlineRoundsMissed = 0;
+      // Note: if player was already dropped / marked unable to play this round while offline,
+      // keep canPlayCurrentRound=false until the current round completes.
     }
+  }
+
+  public setNextRoundEndsAt(ts: number | null): void {
+    this.nextRoundEndsAt = ts;
+  }
+
+  public canStartNextRound(): boolean {
+    if (this.status !== "ROUND_END") return false;
+    const survivors = Array.from(this.players.values()).filter((p) => !p.isEliminated);
+    if (survivors.length < 2) return false;
+    if (!this.poolMode && this.roundNumber >= this.roundCount) return false;
+    return true;
   }
 
   public canStart(): boolean {
@@ -229,6 +268,7 @@ export class Game {
     this.clearTimers();
     this.winnerId = undefined;
     this.winnerMelds = undefined;
+    this.roundRevealedHands = undefined;
     this.submittedMeldPlayerIds.clear();
     this.roundScores = {};
     this.roundDropRecords.clear();
@@ -236,6 +276,8 @@ export class Game {
     this.wildJoker = null;
     this.turnEndsAt = null;
     this.showEndsAt = null;
+    this.nextRoundEndsAt = null;
+    this.roundStarterIndex = 0;
 
     // Build a fresh 52-card standard deck (excluding Printed Jokers) for unique toss draws
     const tossDeck: Card[] = [];
@@ -268,6 +310,10 @@ export class Game {
       const card = tossDeck.pop()!;
       player.hand = [];
       player.hasDropped = false;
+      player.isEliminated = false;
+      player.offlineTurnsMissed = 0;
+      player.offlineRoundsMissed = 0;
+      player.canPlayCurrentRound = true;
       player.score = 0;
       player.consecutiveTimeouts = 0;
       player.hasDrawn = false;
@@ -282,7 +328,7 @@ export class Game {
     // Highest priority first (seatIndex 0 -> gets first turn)
     draws.sort((a, b) => b.priority - a.priority);
 
-    // Reorder internal players Map & seatNumbers to reflect toss result
+    // Reorder internal players Map & seatNumbers to reflect permanent match seat order
     const reorderedMap = new Map<string, PlayerInternalState>();
     const results: TossResult[] = [];
     for (let seatIndex = 0; seatIndex < draws.length; seatIndex++) {
@@ -299,6 +345,7 @@ export class Game {
 
     this.players = reorderedMap;
     this.turnOrder = draws.map((d) => d.player.id);
+    this.roundStarterIndex = 0;
     this.currentTurnIndex = 0;
     this.turnPhase = "DRAW";
     this.tossResults = results;
@@ -329,45 +376,73 @@ export class Game {
   }
 
   /**
-   * Starts a new round (preserves cumulative totalScore across rounds)
+   * Starts a fresh round:
+   * 1. Builds and cryptographically reshuffles a fresh deck (1 deck for <= 3 active players, 2 decks for 4–6).
+   * 2. Cuts a brand-new Wildcard Joker and deals 13 fresh cards + 1 open discard card.
+   * 3. Assigns opening turn to roundStarterIndex (skipping eliminated players).
    */
   public startRound(): void {
-    if (this.players.size < 2) {
-      throw new Error("Need at least 2 players to start game");
+    const allSeated = Array.from(this.players.values()).sort(
+      (a, b) => a.seatNumber - b.seatNumber
+    );
+    const activePlayers = allSeated.filter((p) => !p.isEliminated);
+
+    if (activePlayers.length < 2) {
+      throw new Error("Need at least 2 active players to start round");
     }
 
     this.clearTimers();
     this.status = "DEALING";
     this.winnerId = undefined;
     this.winnerMelds = undefined;
+    this.roundRevealedHands = undefined;
     this.submittedMeldPlayerIds.clear();
     this.roundScores = {};
     this.roundDropRecords.clear();
     this.turnEndsAt = null;
     this.showEndsAt = null;
     this.tossEndsAt = null;
+    this.nextRoundEndsAt = null;
     this.tossResults = undefined;
-    this.deck.reset();
+
+    // Dynamic deck count: <= 3 active players -> 1 deck (54 cards), 4-6 players -> 2 decks (108 cards)
+    const deckCount = activePlayers.length <= 3 ? 1 : 2;
+    this.deck.reset(deckCount);
     this.deck.shuffle();
 
-    // Reset per-round player state (keep cumulative totalScore intact!)
-    const activePlayers = Array.from(this.players.values()).sort(
-      (a, b) => a.seatNumber - b.seatNumber
-    );
-    this.turnOrder = activePlayers.map((p) => p.id);
+    // Preserve permanent seat order across all seated players
+    this.turnOrder = allSeated.map((p) => p.id);
 
-    // Deal 13 cards to each player
+    // Deal 13 fresh cards only to non-eliminated players; eliminated players sit out cleanly
     const { hands } = this.deck.deal(activePlayers.length, 13);
+    const activeHandById = new Map<string, Card[]>();
     for (let i = 0; i < activePlayers.length; i++) {
-      activePlayers[i].hand = hands[i];
-      activePlayers[i].hasDropped = false;
-      activePlayers[i].score = 0;
-      activePlayers[i].consecutiveTimeouts = 0;
-      activePlayers[i].hasDrawn = false;
-      activePlayers[i].melds = undefined;
+      activeHandById.set(activePlayers[i].id, hands[i]);
     }
 
-    // Cut a card from remaining deck to be Wild Joker
+    for (const p of allSeated) {
+      if (p.isEliminated) {
+        p.hand = [];
+        p.hasDropped = true;
+        p.canPlayCurrentRound = false;
+        p.offlineTurnsMissed = 0;
+        p.score = 0;
+        p.consecutiveTimeouts = 0;
+        p.hasDrawn = false;
+        p.melds = undefined;
+      } else {
+        p.hand = activeHandById.get(p.id) || [];
+        p.hasDropped = false;
+        p.canPlayCurrentRound = true;
+        p.offlineTurnsMissed = 0;
+        p.score = 0;
+        p.consecutiveTimeouts = 0;
+        p.hasDrawn = false;
+        p.melds = undefined;
+      }
+    }
+
+    // Cut a brand-new Wildcard Joker from remaining deck
     const cutCard = this.deck.draw();
     if (!cutCard) throw new Error("Deck exhausted during wild joker cut");
 
@@ -385,7 +460,7 @@ export class Game {
     this.wildJoker = markedCutCard;
     this.wildRank = wildRank;
 
-    // Place one initial card face up in discard pile
+    // Place one initial card face up in open discard pile
     const initialDiscard = this.deck.draw();
     if (!initialDiscard) throw new Error("Deck exhausted during initial discard");
     if (!initialDiscard.isPrintedJoker && initialDiscard.rank === this.wildRank) {
@@ -393,12 +468,18 @@ export class Game {
     }
     this.discardPile = [initialDiscard];
 
-    this.currentTurnIndex = 0;
+    // Pick opening player from roundStarterIndex, skipping any eliminated players
+    const starterIdx = this.findNextEligibleIndex(
+      this.roundStarterIndex % this.turnOrder.length,
+      true
+    );
+    this.roundStarterIndex = starterIdx;
+    this.currentTurnIndex = starterIdx;
     this.turnPhase = "DRAW";
     this.status = "PLAYING";
 
-    // Notify each player privately of their new hand
-    for (const p of activePlayers) {
+    // Notify each seated player privately of their new hand (eliminated players get [])
+    for (const p of allSeated) {
       if (this.onPrivateUpdate) {
         this.onPrivateUpdate(p.id, [...p.hand]);
       }
@@ -406,37 +487,161 @@ export class Game {
 
     this.startTurnTimer();
     this.broadcastState();
+
+    // If the opening player is already disconnected (and another active player is online), apply offline handling
+    this.handleOfflineTurnIfNeeded();
   }
 
   /**
-   * Advances to the next round in a multi-round game
+   * Advances to the next round:
+   * - Removes any player who remained offline for >= 1 full circle (round) without returning.
+   * - Rotates the opening player circularly (#1 -> #2 -> #3 -> ...), skipping eliminated players.
+   * - Reshuffles fresh deck, cuts a new Wildcard Joker, and deals 13 fresh cards.
    */
   public startNextRound(nextDbGameId?: string): void {
     if (this.status !== "ROUND_END") {
       throw new Error(`Cannot start next round in status ${this.status}`);
     }
-    if (this.roundNumber >= this.roundCount) {
+
+    // Remove players who stayed offline for a full circle (1 full round) without returning
+    const offlineToRemove: string[] = [];
+    for (const p of this.players.values()) {
+      if (p.connectionStatus === "DISCONNECTED" && p.offlineRoundsMissed >= 1) {
+        offlineToRemove.push(p.id);
+      }
+    }
+    for (const pid of offlineToRemove) {
+      const removedIdx = this.turnOrder.indexOf(pid);
+      this.players.delete(pid);
+      this.turnOrder = this.turnOrder.filter((id) => id !== pid);
+      if (removedIdx !== -1 && removedIdx < this.roundStarterIndex) {
+        this.roundStarterIndex = Math.max(0, this.roundStarterIndex - 1);
+      }
+      if (this.onRemoveOfflinePlayer) {
+        this.onRemoveOfflinePlayer(pid);
+      }
+    }
+
+    const remainingSurvivors = Array.from(this.players.values()).filter(
+      (p) => !p.isEliminated
+    );
+    if (remainingSurvivors.length < 2) {
+      const champ = remainingSurvivors[0] ?? Array.from(this.players.values())[0];
+      this.status = "GAME_OVER";
+      this.nextRoundEndsAt = null;
+      if (champ) {
+        this.winnerId = champ.id;
+      }
+      this.broadcastState();
+      return;
+    }
+
+    if (!this.poolMode && this.roundNumber >= this.roundCount) {
       throw new Error("All scheduled rounds have already been completed");
     }
 
     this.roundNumber += 1;
     this.currentRoundGameId = nextDbGameId || `${this.id}_r${this.roundNumber}`;
+
+    // Rotate starting player circularly (#1 -> #2 -> #3 -> ...), skipping eliminated seats
+    if (this.turnOrder.length > 0) {
+      const nextCandidate = (this.roundStarterIndex + 1) % this.turnOrder.length;
+      this.roundStarterIndex = this.findNextEligibleIndex(nextCandidate, false);
+    }
+
     this.startRound();
   }
 
+  /** Alias for startNextRound() */
+  public nextRound(nextDbGameId?: string): void {
+    this.startNextRound(nextDbGameId);
+  }
+
   /**
-   * Active player draws 1 card
+   * Resets all scores, elimination flags, and round history for an instant rematch
+   * inside the same room without disconnecting LiveKit, then runs a fresh Toss.
+   */
+  public restartMatch(nextDbGameId?: string): void {
+    if (this.status !== "GAME_OVER") {
+      throw new Error(`Cannot restart match in status ${this.status}`);
+    }
+    if (this.players.size < 2) {
+      throw new Error("Need at least 2 players to restart match");
+    }
+
+    this.clearTimers();
+    this.roundNumber = 1;
+    this.currentRoundGameId = nextDbGameId || `${this.id}_rematch_${Date.now()}`;
+    this.roundHistory = [];
+    this.roundScores = {};
+    this.roundDropRecords.clear();
+    this.submittedMeldPlayerIds.clear();
+    this.winnerId = undefined;
+    this.winnerMelds = undefined;
+    this.roundRevealedHands = undefined;
+    this.roundStarterIndex = 0;
+    this.nextRoundEndsAt = null;
+
+    for (const p of this.players.values()) {
+      p.score = 0;
+      p.totalScore = 0;
+      p.isEliminated = false;
+      p.hasDropped = false;
+      p.canPlayCurrentRound = true;
+      p.offlineTurnsMissed = 0;
+      p.offlineRoundsMissed = 0;
+      p.consecutiveTimeouts = 0;
+      p.hasDrawn = false;
+      p.hand = [];
+      p.melds = undefined;
+    }
+
+    this.startToss();
+  }
+
+  private findNextEligibleIndex(startIdx: number, includeDroppedCheck: boolean): number {
+    if (this.turnOrder.length === 0) return 0;
+    const len = this.turnOrder.length;
+    for (let offset = 0; offset < len; offset++) {
+      const idx = (startIdx + offset) % len;
+      const p = this.players.get(this.turnOrder[idx]);
+      if (!p || p.isEliminated) continue;
+      if (includeDroppedCheck && p.hasDropped) continue;
+      return idx;
+    }
+    return 0;
+  }
+
+  /**
+   * Active player draws 1 card from Closed Deck or Open Discard Pile.
+   * Blocks picking a Printed Joker or Wildcard Joker from the Open Pile.
    */
   public drawCard(
     playerId: string,
-    source: "CLOSED" | "DISCARD"
+    source: "CLOSED" | "DISCARD" | "OPEN"
   ): { drawnCard: Card; publicState: PublicGameState } {
     this.validateTurn(playerId, "DRAW");
     const player = this.players.get(playerId)!;
 
+    const requestedOpen = source === "DISCARD" || source === "OPEN";
+    let effectiveSource: "CLOSED" | "DISCARD" = requestedOpen ? "DISCARD" : "CLOSED";
     let drawnCard: Card | undefined;
 
-    if (source === "CLOSED") {
+    if (effectiveSource === "DISCARD") {
+      if (this.discardPile.length === 0) {
+        throw new Error("Discard pile is empty");
+      }
+      const topCard = this.discardPile[this.discardPile.length - 1];
+      const isTopJoker =
+        topCard.isPrintedJoker ||
+        topCard.rank === "PRINTED_JOKER" ||
+        topCard.isWildJoker ||
+        topCard.rank === this.wildRank;
+      if (isTopJoker) {
+        throw new Error("Cannot pick a Joker from the Open Pile");
+      }
+      drawnCard = this.discardPile.pop()!;
+    } else {
       if (this.deck.count === 0) {
         this.reshuffleDiscardIntoDeck();
       }
@@ -446,27 +651,23 @@ export class Game {
         if (this.discardPile.length === 0) {
           throw new Error("No cards available to draw");
         }
-        source = "DISCARD";
+        effectiveSource = "DISCARD";
+        drawnCard = this.discardPile.pop()!;
+      } else {
+        drawnCard = this.deck.draw();
+        if (!drawnCard) throw new Error("No cards available to draw");
       }
     }
-    if (source === "CLOSED") {
-      drawnCard = this.deck.draw();
-      if (!drawnCard) throw new Error("No cards available to draw");
 
-      // Mark wild joker using explicit wildRank (handles Printed Joker cut -> Ace wild)
-      if (!drawnCard.isPrintedJoker && drawnCard.rank === this.wildRank) {
-        drawnCard.isWildJoker = true;
-      }
-    } else {
-      if (this.discardPile.length === 0) {
-        throw new Error("Discard pile is empty");
-      }
-      drawnCard = this.discardPile.pop()!;
+    // Mark wild joker using explicit wildRank (handles Printed Joker cut -> Ace wild)
+    if (!drawnCard.isPrintedJoker && drawnCard.rank === this.wildRank) {
+      drawnCard.isWildJoker = true;
     }
 
     player.hand.push(drawnCard);
     player.hasDrawn = true;
     player.consecutiveTimeouts = 0;
+    player.offlineTurnsMissed = 0;
     this.turnPhase = "DISCARD";
 
     // Send private update to active player
@@ -478,8 +679,8 @@ export class Game {
     const publicState = this.getPublicState({
       playerId,
       username: player.username,
-      type: source === "CLOSED" ? "DRAW_CLOSED" : "DRAW_OPEN",
-      card: source === "DISCARD" ? drawnCard : undefined, // Open draw is public
+      type: effectiveSource === "CLOSED" ? "DRAW_CLOSED" : "DRAW_OPEN",
+      card: effectiveSource === "DISCARD" ? drawnCard : undefined, // Open draw is public
       timestamp: Date.now(),
     });
 
@@ -508,28 +709,32 @@ export class Game {
 
     const [discardedCard] = player.hand.splice(cardIndex, 1);
     this.discardPile.push(discardedCard);
+    player.offlineTurnsMissed = 0;
 
     // Update player hand privately
     if (this.onPrivateUpdate) {
       this.onPrivateUpdate(player.id, [...player.hand]);
     }
 
-    // Advance turn to next active player
-    this.advanceTurn();
-
-    const publicState = this.getPublicState({
+    const lastAction: PublicGameState["lastAction"] = {
       playerId,
       username: player.username,
       type: "DISCARD",
       card: discardedCard,
       timestamp: Date.now(),
-    });
+    };
 
+    // Advance turn to next active player (and broadcast discard before any offline skip/drop)
+    this.advanceTurnStep();
+    const afterDiscardState = this.getPublicState(lastAction);
     if (this.onStateUpdate) {
-      this.onStateUpdate(publicState);
+      this.onStateUpdate(afterDiscardState);
     }
 
-    return { discardedCard, publicState };
+    // Apply offline turn skip / auto-drop if the new current turn player is disconnected
+    this.handleOfflineTurnIfNeeded();
+
+    return { discardedCard, publicState: this.getPublicState(lastAction) };
   }
 
   /**
@@ -558,6 +763,7 @@ export class Game {
     const reason = isFirstDrop ? "First Drop (20 pts)" : "Middle Drop (40 pts)";
 
     player.hasDropped = true;
+    player.canPlayCurrentRound = false;
     player.score += penalty;
     player.totalScore += penalty;
     this.roundDropRecords.set(player.id, { points: penalty, reason });
@@ -571,7 +777,7 @@ export class Game {
 
     // Check if only 1 active player remains
     const remainingPlayers = Array.from(this.players.values()).filter(
-      (p) => !p.hasDropped
+      (p) => !p.hasDropped && !p.isEliminated
     );
 
     if (remainingPlayers.length === 1) {
@@ -582,13 +788,14 @@ export class Game {
       return { penalty, publicState: this.getPublicState(lastAction) };
     }
 
-    this.advanceTurn();
+    this.advanceTurnStep();
     const publicState = this.getPublicState(lastAction);
     if (this.onStateUpdate) {
       this.onStateUpdate(publicState);
     }
+    this.handleOfflineTurnIfNeeded();
 
-    return { penalty, publicState };
+    return { penalty, publicState: this.getPublicState(lastAction) };
   }
 
   /**
@@ -722,13 +929,14 @@ export class Game {
       player.score += 80;
       player.totalScore += 80;
       player.hasDropped = true; // Invalid declaration drops the player
+      player.canPlayCurrentRound = false;
       this.roundDropRecords.set(player.id, {
         points: 80,
         reason: "Invalid Declaration (80 pts)",
       });
 
       const remainingPlayers = Array.from(this.players.values()).filter(
-        (p) => !p.hasDropped
+        (p) => !p.hasDropped && !p.isEliminated
       );
 
       if (remainingPlayers.length === 1) {
@@ -736,8 +944,9 @@ export class Game {
         const scores = this.buildDropEndScores(winner, "Winner");
         this.endRound(winner.id, scores, lastAction);
       } else {
-        this.advanceTurn();
+        this.advanceTurnStep();
         this.broadcastState(lastAction);
+        this.handleOfflineTurnIfNeeded();
       }
 
       return {
@@ -870,6 +1079,15 @@ export class Game {
     for (const other of this.players.values()) {
       if (other.id === winner.id) continue;
 
+      if (other.isEliminated && other.hand.length === 0) {
+        scores[other.id] = {
+          points: 0,
+          totalScore: other.totalScore,
+          reason: "Eliminated (Sitting Out)",
+        };
+        continue;
+      }
+
       if (other.hasDropped) {
         const dropRec = this.roundDropRecords.get(other.id);
         scores[other.id] = {
@@ -907,12 +1125,12 @@ export class Game {
 
   private getActiveShowOpponents(): PlayerInternalState[] {
     return Array.from(this.players.values()).filter(
-      (p) => p.id !== this.winnerId && !p.hasDropped
+      (p) => p.id !== this.winnerId && !p.hasDropped && !p.isEliminated
     );
   }
 
   /**
-   * Builds a complete roundScores map containing the winner plus ALL dropped players.
+   * Builds a complete roundScores map containing the winner plus ALL dropped/eliminated players.
    */
   private buildDropEndScores(
     winner: PlayerInternalState,
@@ -926,6 +1144,12 @@ export class Game {
           points: 0,
           totalScore: p.totalScore,
           reason: winnerReason,
+        };
+      } else if (p.isEliminated && p.hand.length === 0 && !this.roundDropRecords.has(p.id)) {
+        scores[p.id] = {
+          points: 0,
+          totalScore: p.totalScore,
+          reason: "Eliminated (Sitting Out)",
         };
       } else {
         const dropRec = this.roundDropRecords.get(p.id);
@@ -959,22 +1183,126 @@ export class Game {
     this.deck.shuffle();
   }
 
-  private advanceTurn(): void {
+  private advanceTurnStep(): void {
     const activeIds = this.turnOrder.filter((id) => {
       const p = this.players.get(id);
-      return p && !p.hasDropped;
+      return p && !p.hasDropped && !p.isEliminated && p.canPlayCurrentRound;
     });
 
     if (activeIds.length <= 1) return;
 
     let nextIndex = (this.currentTurnIndex + 1) % this.turnOrder.length;
-    while (this.players.get(this.turnOrder[nextIndex])?.hasDropped) {
+    let guard = 0;
+    while (guard < this.turnOrder.length) {
+      const candidate = this.players.get(this.turnOrder[nextIndex]);
+      if (
+        candidate &&
+        !candidate.hasDropped &&
+        !candidate.isEliminated &&
+        candidate.canPlayCurrentRound
+      ) {
+        break;
+      }
       nextIndex = (nextIndex + 1) % this.turnOrder.length;
+      guard++;
     }
 
     this.currentTurnIndex = nextIndex;
     this.turnPhase = "DRAW";
     this.startTurnTimer();
+  }
+
+  private advanceTurn(): void {
+    this.advanceTurnStep();
+    this.handleOfflineTurnIfNeeded();
+  }
+
+  private hasAnyConnectedActivePlayer(): boolean {
+    for (const p of this.players.values()) {
+      if (
+        !p.hasDropped &&
+        !p.isEliminated &&
+        p.canPlayCurrentRound &&
+        p.connectionStatus === "CONNECTED"
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Handles offline/disconnected players when their turn arrives:
+   * - 1st missed turn while offline: skip cleanly to the next active player.
+   * - 2nd missed turn while offline: auto-drop for this round (penalty 20/40 pts, canPlayCurrentRound=false).
+   * Only runs while at least 1 other active player is connected (if all disconnect, timer pauses).
+   */
+  public handleOfflineTurnIfNeeded(): void {
+    if (this.status !== "PLAYING") return;
+    if (!this.hasAnyConnectedActivePlayer()) return;
+
+    const maxIterations = Math.max(2, this.turnOrder.length * 2);
+    for (let step = 0; step < maxIterations; step++) {
+      if (this.status !== "PLAYING") return;
+      if (!this.hasAnyConnectedActivePlayer()) return;
+
+      const currentId = this.getCurrentTurnPlayerId();
+      const current = this.players.get(currentId);
+      if (
+        !current ||
+        current.hasDropped ||
+        current.isEliminated ||
+        current.connectionStatus === "CONNECTED"
+      ) {
+        return;
+      }
+
+      current.offlineTurnsMissed += 1;
+
+      if (current.offlineTurnsMissed === 1) {
+        // 1st missed turn offline: skip cleanly to next active player
+        const skipAction: PublicGameState["lastAction"] = {
+          playerId: current.id,
+          username: current.username,
+          type: "SKIP_OFFLINE",
+          timestamp: Date.now(),
+        };
+        this.advanceTurnStep();
+        this.broadcastState(skipAction);
+      } else {
+        // 2nd missed turn offline: auto-drop for the remainder of this round
+        const isFirstDrop = current.hand.length === 13 && !current.hasDrawn;
+        const penalty = isFirstDrop ? 20 : 40;
+        const reason = `Offline Auto-Drop (${penalty} pts)`;
+
+        current.hasDropped = true;
+        current.canPlayCurrentRound = false;
+        current.score += penalty;
+        current.totalScore += penalty;
+        this.roundDropRecords.set(current.id, { points: penalty, reason });
+
+        const dropAction: PublicGameState["lastAction"] = {
+          playerId: current.id,
+          username: current.username,
+          type: "DROP",
+          timestamp: Date.now(),
+        };
+
+        const remainingPlayers = Array.from(this.players.values()).filter(
+          (p) => !p.hasDropped && !p.isEliminated
+        );
+
+        if (remainingPlayers.length === 1) {
+          const winner = remainingPlayers[0];
+          const scores = this.buildDropEndScores(winner, "Winner (Opponents Dropped)");
+          this.endRound(winner.id, scores, dropAction);
+          return;
+        }
+
+        this.advanceTurnStep();
+        this.broadcastState(dropAction);
+      }
+    }
   }
 
   public isTimerRunning(): boolean {
@@ -1072,6 +1400,24 @@ export class Game {
     const player = this.players.get(currentId);
     if (!player) return;
 
+    // If the active turn player is currently offline/disconnected, apply offline skip -> auto-drop rules
+    if (player.connectionStatus === "DISCONNECTED") {
+      if (this.turnPhase === "DISCARD") {
+        // Discard last card so hand returns to 13 before advancing/skipping
+        const lastCard = player.hand[player.hand.length - 1];
+        if (lastCard) {
+          player.hand.pop();
+          this.discardPile.push(lastCard);
+        }
+        this.turnPhase = "DRAW";
+      }
+      this.handleOfflineTurnIfNeeded();
+      if (this.onTurnTimeout) {
+        this.onTurnTimeout(player.id);
+      }
+      return;
+    }
+
     player.consecutiveTimeouts++;
     const timeoutCount = player.consecutiveTimeouts;
 
@@ -1128,7 +1474,40 @@ export class Game {
     this.showEndsAt = null;
     this.tossEndsAt = null;
     this.turnTimeRemaining = 0;
-    this.status = this.roundNumber >= this.roundCount ? "GAME_OVER" : "ROUND_END";
+
+    // Build visual round-end hand reveal (ONLY exposed on ROUND_END / GAME_OVER!)
+    const revealedHands: Record<string, Card[][]> = {};
+    for (const p of this.players.values()) {
+      if (p.id === winnerId && this.winnerMelds && this.winnerMelds.length > 0) {
+        revealedHands[p.id] = this.winnerMelds;
+      } else if (p.melds && p.melds.length > 0) {
+        revealedHands[p.id] = p.melds;
+      } else if (p.hand.length > 0) {
+        revealedHands[p.id] = [Evaluator.sortHand(p.hand, "SUIT")];
+      } else {
+        revealedHands[p.id] = [];
+      }
+
+      // Pool Points Mode elimination check: >= targetPoints eliminates player from subsequent rounds
+      if (p.totalScore >= this.targetPoints) {
+        p.isEliminated = true;
+      }
+
+      // Track full rounds stayed offline (1-circle grace before removal on next round)
+      if (p.connectionStatus === "DISCONNECTED") {
+        p.offlineRoundsMissed += 1;
+      }
+    }
+    this.roundRevealedHands = revealedHands;
+
+    const activeSurvivors = Array.from(this.players.values()).filter(
+      (p) => !p.isEliminated
+    );
+    const matchComplete = this.poolMode
+      ? activeSurvivors.length <= 1
+      : activeSurvivors.length <= 1 || this.roundNumber >= this.roundCount;
+
+    this.status = matchComplete ? "GAME_OVER" : "ROUND_END";
     this.winnerId = winnerId;
     this.roundScores = scores;
     const roundPoints: Record<string, number> = {};
@@ -1195,6 +1574,9 @@ export class Game {
         isReady: p.isReady,
         connectionStatus: p.connectionStatus,
         hasDropped: p.hasDropped,
+        isEliminated: p.isEliminated,
+        offlineTurnsMissed: p.offlineTurnsMissed,
+        canPlayCurrentRound: p.canPlayCurrentRound,
         score: p.totalScore,
       })
     );
@@ -1209,6 +1591,9 @@ export class Game {
         ? Math.max(0, Math.ceil((this.turnEndsAt - Date.now()) / 1000))
         : Math.max(0, this.turnTimeRemaining);
 
+    const showRevealedHands =
+      this.status === "ROUND_END" || this.status === "GAME_OVER";
+
     return {
       gameId: this.currentRoundGameId,
       roomId: this.roomId,
@@ -1216,6 +1601,8 @@ export class Game {
       status: this.status,
       roundNumber: this.roundNumber,
       roundCount: this.roundCount,
+      targetPoints: this.targetPoints,
+      deckCount: this.deck.deckCount,
       currentTurnPlayerId: currentId,
       turnPhase: this.turnPhase,
       turnTimeLimitSeconds: this.turnTimeLimit,
@@ -1223,6 +1610,7 @@ export class Game {
       turnEndsAt: this.turnEndsAt,
       showTimeLimitSeconds: this.showTimeLimit,
       showEndsAt: this.showEndsAt,
+      nextRoundEndsAt: this.status === "ROUND_END" ? this.nextRoundEndsAt : null,
       tossResults: this.tossResults,
       tossEndsAt: this.tossEndsAt,
       wildJoker: this.wildJoker,
@@ -1238,6 +1626,7 @@ export class Game {
       lastAction,
       winnerId: this.winnerId,
       winnerMelds: this.winnerMelds,
+      roundRevealedHands: showRevealedHands ? this.roundRevealedHands : undefined,
       submittedMeldPlayerIds: Array.from(this.submittedMeldPlayerIds),
       roundScores: this.roundScores,
       roundHistory: this.roundHistory.length > 0 ? [...this.roundHistory] : undefined,
@@ -1255,6 +1644,13 @@ export class Game {
   private validateTurn(playerId: string, requiredPhase: TurnPhase): void {
     if (this.status !== "PLAYING") {
       throw new Error(`Game is not in PLAYING state (current: ${this.status})`);
+    }
+    const player = this.players.get(playerId);
+    if (player && player.isEliminated) {
+      throw new Error("Eliminated players cannot play in this round");
+    }
+    if (player && (!player.canPlayCurrentRound || player.hasDropped)) {
+      throw new Error("You can rejoin gameplay on the next round");
     }
     const currentId = this.getCurrentTurnPlayerId();
     if (playerId !== currentId) {

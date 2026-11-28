@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { Award, Crown, Sparkles } from "lucide-react";
+import { Award, Crown, Lock, Sparkles } from "lucide-react";
 import React, { useState } from "react";
 import { Card } from "@/components/game/Card";
 import {
@@ -148,6 +148,17 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
   const isDrawPhase = isMyTurn && gameState.turnPhase === "DRAW";
   const isDiscardPhase = isMyTurn && gameState.turnPhase === "DISCARD";
 
+  // Part 1 Item 6: Block picking Printed Joker or Wildcard Joker from the Open Discard Pile
+  const topDiscard = gameState.topDiscardCard;
+  const isTopDiscardJoker = Boolean(
+    topDiscard &&
+      (topDiscard.isPrintedJoker ||
+        topDiscard.rank === "PRINTED_JOKER" ||
+        topDiscard.isWildJoker ||
+        (gameState.wildRank && topDiscard.rank === gameState.wildRank))
+  );
+  const canDrawFromOpen = Boolean(isDrawPhase && topDiscard && !isTopDiscardJoker);
+
   const isDraggingHandCard = activeDrag?.kind === "HAND_CARD";
   const isDiscardZoneActive = isDraggingHandCard && isDiscardPhase;
   const isDiscardZoneHovered =
@@ -245,12 +256,18 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
       {/* Top Center Glass Table Info Pill */}
       <div className="glass-pill px-3 py-1 mobile-landscape:px-2.5 mobile-landscape:py-0.5 rounded-full flex items-center gap-2 text-[10px] sm:text-[11px] mobile-landscape:text-[9px] text-slate-200 font-medium shadow">
         <span className="font-semibold text-amber-200">
-          13-Card Points Rummy
+          Pool {gameState.targetPoints ?? 101} Rummy
         </span>
         <span className="text-white/25">•</span>
-        <span>
-          Round {gameState.roundNumber}/{gameState.roundCount}
-        </span>
+        <span>Round {gameState.roundNumber}</span>
+        {gameState.deckCount && (
+          <>
+            <span className="text-white/25 hidden sm:inline">•</span>
+            <span className="hidden sm:inline text-emerald-200/90">
+              {gameState.deckCount === 1 ? "1 Deck" : `${gameState.deckCount} Decks`}
+            </span>
+          </>
+        )}
         {wildRankLabel && (
           <>
             <span className="text-white/25 hidden sm:inline">•</span>
@@ -414,9 +431,9 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             )}
 
           <div
-            draggable={Boolean(isDrawPhase && gameState.topDiscardCard)}
+            draggable={canDrawFromOpen}
             onDragStart={(e) => {
-              if (!isDrawPhase || !gameState.topDiscardCard) {
+              if (!canDrawFromOpen || !gameState.topDiscardCard) {
                 e.preventDefault();
                 return;
               }
@@ -434,7 +451,7 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             }}
             onDragEnd={onEndDrag}
             onTouchStart={(e) => {
-              if (isDrawPhase && gameState.topDiscardCard) {
+              if (canDrawFromOpen && gameState.topDiscardCard) {
                 onTouchDragStart(e, {
                   kind: "DRAW_OPEN",
                   card: gameState.topDiscardCard,
@@ -443,7 +460,7 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             }}
             onClick={() => {
               if (shouldSuppressClick()) return;
-              if (isDrawPhase && gameState.topDiscardCard) {
+              if (canDrawFromOpen) {
                 onDraw("DISCARD");
               }
             }}
@@ -452,8 +469,10 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
                 ? "ring-4 ring-amber-400 shadow-[0_0_28px_rgba(251,191,36,0.75)]"
                 : isDiscardZoneActive
                 ? "ring-2 ring-amber-400/75 shadow-[0_0_18px_rgba(251,191,36,0.4)]"
-                : isDrawPhase && gameState.topDiscardCard
+                : canDrawFromOpen
                 ? "cursor-grab active:cursor-grabbing touch-none draw-highlight ring-2 ring-emerald-300 hover:scale-105"
+                : isDrawPhase && isTopDiscardJoker
+                ? "cursor-not-allowed ring-1 ring-amber-500/45 opacity-90"
                 : "cursor-default"
             } ${
               activeDrag?.kind === "DRAW_OPEN" ? "opacity-60 scale-95" : ""
@@ -461,7 +480,9 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
             title={
               isDiscardPhase
                 ? "Drag a card from your hand here to discard"
-                : isDrawPhase && gameState.topDiscardCard
+                : isTopDiscardJoker
+                ? "Cannot pick a Joker from the Open Pile"
+                : canDrawFromOpen
                 ? "Click or drag down to your hand to draw from Open Pile"
                 : "Open Discard Pile"
             }
@@ -478,7 +499,7 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
                   <Card
                     card={gameState.topDiscardCard}
                     size="deck"
-                    disabled={!isDrawPhase && !isDiscardZoneActive}
+                    disabled={!canDrawFromOpen && !isDiscardZoneActive}
                   />
                 </motion.div>
               ) : (
@@ -487,6 +508,17 @@ export const DeckPiles: React.FC<DeckPilesProps> = ({
                 </div>
               )}
             </AnimatePresence>
+
+            {/* Subtle Lock Badge when top Open Pile card is a Joker */}
+            {isTopDiscardJoker && !isDiscardZoneActive && (
+              <div
+                className="pointer-events-none absolute -bottom-2 left-1/2 -translate-x-1/2 z-20 flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-slate-950/95 border border-amber-400/65 text-amber-300 text-[7px] sm:text-[8px] font-black uppercase tracking-wider whitespace-nowrap shadow-lg"
+                title="Cannot pick a Joker from the Open Pile"
+              >
+                <Lock className="w-2.5 h-2.5 shrink-0" />
+                <span>Joker Locked</span>
+              </div>
+            )}
 
             {/* Discard Count Badge */}
             <div className="absolute -top-2 -right-2 bg-slate-950/95 text-emerald-300 border border-emerald-400/45 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold px-1.5 py-0.5 rounded-full shadow-lg leading-none pointer-events-none">

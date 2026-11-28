@@ -31,6 +31,7 @@ export interface RoomManagerOptions {
   turnTimeLimitSeconds?: number;
   showTimeLimitSeconds?: number;
   tossDurationMs?: number;
+  roundEndAutoAdvanceMs?: number;
 }
 
 function getErrorMessage(err: unknown, fallback: string): string {
@@ -46,6 +47,7 @@ export class RoomManager {
   private turnTimeLimitSeconds: number;
   private showTimeLimitSeconds: number;
   private tossDurationMs: number;
+  private roundEndAutoAdvanceMs: number;
 
   // roomCode -> Map of userId -> ActiveLobbyPlayer
   private lobbyPlayers: Map<string, Map<string, ActiveLobbyPlayer>> = new Map();
@@ -63,6 +65,8 @@ export class RoomManager {
   private persistRoundPromises: Map<string, Promise<void>> = new Map();
   // roomCode -> pending host transfer timeout after host disconnect
   private hostTransferTimers: Map<string, NodeJS.Timeout> = new Map();
+  // roomCode -> pending auto-advance timeout after ROUND_END in Pool Points mode
+  private roundEndTimers: Map<string, NodeJS.Timeout> = new Map();
   // roomCode -> Set of userIds who returned to lobby after GAME_OVER
   private returnedToLobby: Map<string, Set<string>> = new Map();
 
@@ -82,6 +86,12 @@ export class RoomManager {
         : !Number.isNaN(envTossMs)
         ? Math.max(0, envTossMs)
         : 3500;
+    this.roundEndAutoAdvanceMs =
+      options.roundEndAutoAdvanceMs !== undefined
+        ? Math.max(0, options.roundEndAutoAdvanceMs)
+        : process.env.NODE_ENV === "test"
+        ? 0
+        : 9000;
   }
 
   /**
@@ -222,19 +232,15 @@ export class RoomManager {
             }
           }
 
-          // Validate active-game and maxPlayers capacity BEFORE joining Socket.IO
-          // channel or recording socketSessions so rejected users never receive
-          // room broadcasts or hold a room session.
+          // Block ANY new non-member user once status !== "WAITING".
+          // Existing room members reconnecting are always permitted back in.
           if (!isReconnectingPlayer) {
-            const gameInProgress =
-              (activeGame &&
-                activeGame.status !== "WAITING" &&
-                activeGame.status !== "GAME_OVER") ||
-              (room.status === "PLAYING" &&
-                (!activeGame || activeGame.status !== "GAME_OVER"));
+            const gameHasStarted =
+              (activeGame && activeGame.status !== "WAITING") ||
+              room.status !== "WAITING";
 
-            if (gameInProgress) {
-              socket.emit("ERROR", { message: "Game is already in progress" });
+            if (gameHasStarted) {
+              socket.emit("ERROR", { message: "Game has already started" });
               return;
             }
 
@@ -454,9 +460,11 @@ export class RoomManager {
           const publicState = game.getPublicState();
           this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", publicState);
           const anyConnected = publicState.players.some(
-            (p) => !p.hasDropped && p.connectionStatus === "CONNECTED"
+            (p) => !p.hasDropped && !p.isEliminated && p.connectionStatus === "CONNECTED"
           );
-          const hasActive = publicState.players.some((p) => !p.hasDropped);
+          const hasActive = publicState.players.some(
+            (p) => !p.hasDropped && !p.isEliminated
+          );
           if (hasActive && !anyConnected) {
             game.stopTimer();
           }
@@ -465,6 +473,7 @@ export class RoomManager {
 
       if (!playersMap || playersMap.size === 0) {
         this.clearHostTransferTimer(roomCode);
+        this.clearRoundEndTimer(roomCode);
         this.lobbyPlayers.delete(roomCode);
         this.returnedToLobby.delete(roomCode);
         if (
@@ -486,7 +495,7 @@ export class RoomManager {
       socket.emit("LEFT_ROOM", { roomCode });
     });
 
-    // Event: KICK_PLAYER (Host only, lobby state only)
+    // Event: KICK_PLAYER (Host only, WAITING lobby only)
     socket.on("KICK_PLAYER", async (payload: { targetUserId?: unknown }) => {
       const session = this.socketSessions.get(socket.id);
       if (!session) return;
@@ -514,13 +523,9 @@ export class RoomManager {
       }
 
       const activeGame = this.activeGames.get(roomCode);
-      if (
-        activeGame &&
-        activeGame.status !== "WAITING" &&
-        activeGame.status !== "GAME_OVER"
-      ) {
+      if (activeGame && activeGame.status !== "WAITING") {
         socket.emit("ERROR", {
-          message: "Cannot kick players while a game is in progress",
+          message: "Cannot kick players once the game has started",
         });
         return;
       }
@@ -643,18 +648,20 @@ export class RoomManager {
         if (existingGame) {
           existingGame.stopTimer();
         }
+        this.clearRoundEndTimer(roomCode);
         this.returnedToLobby.delete(roomCode);
 
-        // Initialize Game Engine (in memory first)
+        // Initialize Game Engine in Pool Points Mode (101 / 201 targetPoints)
+        const targetPoints = room.targetPoints || 101;
         const game = new Game(`game_${roomCode}_${Date.now()}`, room.id, roomCode, {
           turnTimeLimitSeconds: this.getRoomTurnTimeLimit(roomCode),
           showTimeLimitSeconds: this.showTimeLimitSeconds,
           tossDurationMs: this.tossDurationMs,
-          roundCount: Math.max(1, room.roundCount || 1),
+          targetPoints,
           entryPoints: room.entryPoints,
           onStateUpdate: (state) => {
             console.log(
-              `START_GAME: onStateUpdate called, status=${state.status}, round=${state.roundNumber}/${state.roundCount}, turn=${state.currentTurnPlayerId}`
+              `START_GAME: onStateUpdate called, status=${state.status}, round=${state.roundNumber} (Pool ${state.targetPoints}), turn=${state.currentTurnPlayerId}`
             );
             // Keep lobby seat numbers synced with toss-determined seat order
             if (state.status === "TOSS") {
@@ -666,21 +673,34 @@ export class RoomManager {
                 }
               }
             }
+            if (state.status === "ROUND_END" && game.canStartNextRound()) {
+              this.scheduleAutoNextRound(roomCode, game);
+              state.nextRoundEndsAt = game.getPublicState().nextRoundEndsAt;
+            } else if (state.status !== "ROUND_END") {
+              this.clearRoundEndTimer(roomCode);
+            }
             this.io.to(`room_${roomCode}`).emit("GAME_STATE_UPDATE", state);
             if (state.status === "ROUND_END" || state.status === "GAME_OVER") {
               void this.persistRoundEnd(game, state);
             }
-            if (state.status === "GAME_OVER" && typeof prisma.room?.update === "function") {
-              prisma.room
-                .update({
-                  where: { roomCode },
-                  data: { status: "WAITING" },
-                })
-                .catch(() => {});
-            }
           },
           onPrivateUpdate: (playerId, cards) => {
             this.deliverPrivateHand(roomCode, playerId, cards);
+          },
+          onRemoveOfflinePlayer: (offlineUserId) => {
+            const lMap = this.lobbyPlayers.get(roomCode);
+            const removed = lMap?.get(offlineUserId);
+            if (lMap) {
+              lMap.delete(offlineUserId);
+            }
+            this.deleteRoomPlayerInDb(roomCode, offlineUserId);
+            if (removed?.isHost) {
+              void this.transferHostIfNeeded(roomCode).then(() =>
+                this.broadcastLobby(roomCode)
+              );
+            } else {
+              this.broadcastLobby(roomCode);
+            }
           },
         });
 
@@ -727,7 +747,7 @@ export class RoomManager {
       }
     });
 
-    // Event: NEXT_ROUND (Host only, when ROUND_END and rounds remain)
+    // Event: NEXT_ROUND (Host only, when ROUND_END and >= 2 survivors remain)
     socket.on("NEXT_ROUND", async () => {
       const session = this.socketSessions.get(socket.id);
       if (!session) return;
@@ -755,33 +775,77 @@ export class RoomManager {
         return;
       }
 
-      if (game.roundNumber >= game.roundCount) {
+      if (!game.canStartNextRound()) {
         socket.emit("ERROR", {
-          message: "All rounds for this match have been completed",
+          message: "Match is already complete",
         });
         return;
       }
 
+      this.clearRoundEndTimer(roomCode);
       try {
-        const nextRoundNumber = game.roundNumber + 1;
-        const nextRoundGameId = `${game.id}_r${nextRoundNumber}`;
-
-        if (typeof prisma.game?.create === "function") {
-          await prisma.game.create({
-            data: {
-              id: nextRoundGameId,
-              roomId: game.roomId,
-              roundNumber: nextRoundNumber,
-              gameStatus: "IN_PROGRESS",
-            },
-          });
-        }
-
-        game.startNextRound(nextRoundGameId);
+        await this.advanceGameToNextRound(roomCode, game);
       } catch (err: unknown) {
         console.error("NEXT_ROUND error:", err);
         socket.emit("ERROR", {
           message: getErrorMessage(err, "Failed to start next round"),
+        });
+      }
+    });
+
+    // Event: RESTART_MATCH (Host only, allowed when GAME_OVER — instant rematch in same room)
+    socket.on("RESTART_MATCH", async () => {
+      const session = this.socketSessions.get(socket.id);
+      if (!session) return;
+      const { roomCode, userId } = session;
+
+      const playersMap = this.lobbyPlayers.get(roomCode);
+      const hostPlayer = playersMap?.get(userId);
+      if (!hostPlayer || !hostPlayer.isHost) {
+        socket.emit("ERROR", {
+          message: "Only the room host can restart the match",
+        });
+        return;
+      }
+
+      const game = this.activeGames.get(roomCode);
+      if (!game) {
+        socket.emit("ERROR", { message: "No completed game found to restart" });
+        return;
+      }
+
+      if (game.status !== "GAME_OVER") {
+        socket.emit("ERROR", {
+          message: "Match can only be restarted after GAME_OVER",
+        });
+        return;
+      }
+
+      this.clearRoundEndTimer(roomCode);
+      this.returnedToLobby.delete(roomCode);
+
+      try {
+        const rematchGameId = `game_${roomCode}_rematch_${Date.now()}`;
+        if (typeof prisma.game?.create === "function") {
+          await prisma.game.create({
+            data: {
+              id: rematchGameId,
+              roomId: game.roomId,
+              roundNumber: 1,
+              gameStatus: "IN_PROGRESS",
+            },
+          });
+        }
+        if (typeof prisma.room?.update === "function") {
+          prisma.room
+            .update({ where: { roomCode }, data: { status: "PLAYING" } })
+            .catch(() => {});
+        }
+        game.restartMatch(rematchGameId);
+      } catch (err: unknown) {
+        console.error("RESTART_MATCH error:", err);
+        socket.emit("ERROR", {
+          message: getErrorMessage(err, "Failed to restart match"),
         });
       }
     });
@@ -810,9 +874,15 @@ export class RoomManager {
             .filter((p) => p.connectionStatus === "CONNECTED")
             .every((p) => this.returnedToLobby.get(roomCode)!.has(p.userId));
           if (allConnectedReturned) {
+            this.clearRoundEndTimer(roomCode);
             game.stopTimer();
             this.activeGames.delete(roomCode);
             this.returnedToLobby.delete(roomCode);
+            if (typeof prisma.room?.update === "function") {
+              prisma.room
+                .update({ where: { roomCode }, data: { status: "WAITING" } })
+                .catch(() => {});
+            }
           }
         }
       }
@@ -822,7 +892,7 @@ export class RoomManager {
     });
 
     // Event: DRAW_CARD
-    socket.on("DRAW_CARD", ({ source }: { source: "CLOSED" | "DISCARD" }) => {
+    socket.on("DRAW_CARD", ({ source }: { source: "CLOSED" | "DISCARD" | "OPEN" }) => {
       const session = this.socketSessions.get(socket.id);
       if (!session) return;
       const game = this.activeGames.get(session.roomCode);
@@ -1129,9 +1199,11 @@ export class RoomManager {
             game.status === "SHOW"
           ) {
             const anyConnected = publicState.players.some(
-              (p) => !p.hasDropped && p.connectionStatus === "CONNECTED"
+              (p) => !p.hasDropped && !p.isEliminated && p.connectionStatus === "CONNECTED"
             );
-            const hasActive = publicState.players.some((p) => !p.hasDropped);
+            const hasActive = publicState.players.some(
+              (p) => !p.hasDropped && !p.isEliminated
+            );
             if (hasActive && !anyConnected) {
               game.stopTimer();
             }
@@ -1211,6 +1283,58 @@ export class RoomManager {
         return null;
       })
       .catch(() => {});
+  }
+
+  private clearRoundEndTimer(roomCode: string): void {
+    const existing = this.roundEndTimers.get(roomCode);
+    if (existing) {
+      clearTimeout(existing);
+      this.roundEndTimers.delete(roomCode);
+    }
+    const game = this.activeGames.get(roomCode);
+    if (game) {
+      game.setNextRoundEndsAt(null);
+    }
+  }
+
+  private scheduleAutoNextRound(roomCode: string, game: Game): void {
+    this.clearRoundEndTimer(roomCode);
+    if (this.roundEndAutoAdvanceMs <= 0) return;
+
+    const deadline = Date.now() + this.roundEndAutoAdvanceMs;
+    game.setNextRoundEndsAt(deadline);
+
+    const timer = setTimeout(() => {
+      this.roundEndTimers.delete(roomCode);
+      if (this.activeGames.get(roomCode) === game && game.canStartNextRound()) {
+        void this.advanceGameToNextRound(roomCode, game).catch((err) => {
+          console.error(`Auto next-round failed for room ${roomCode}:`, err);
+        });
+      }
+    }, this.roundEndAutoAdvanceMs);
+
+    if (typeof timer.unref === "function") {
+      timer.unref();
+    }
+    this.roundEndTimers.set(roomCode, timer);
+  }
+
+  private async advanceGameToNextRound(roomCode: string, game: Game): Promise<void> {
+    const nextRoundNumber = game.roundNumber + 1;
+    const nextRoundGameId = `${game.id}_r${nextRoundNumber}_${Date.now()}`;
+
+    if (typeof prisma.game?.create === "function") {
+      await prisma.game.create({
+        data: {
+          id: nextRoundGameId,
+          roomId: game.roomId,
+          roundNumber: nextRoundNumber,
+          gameStatus: "IN_PROGRESS",
+        },
+      });
+    }
+
+    game.startNextRound(nextRoundGameId);
   }
 
   private clearHostTransferTimer(roomCode: string): void {

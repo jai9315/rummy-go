@@ -43,6 +43,7 @@ export interface RoomRecord {
   status: string;
   passwordHash: string | null;
   roundCount: number;
+  targetPoints: number;
   entryPoints: number;
   createdAt: string;
   updatedAt: string;
@@ -217,6 +218,7 @@ const TABLE_COLUMNS: Record<TableName, ReadonlySet<string>> = {
     "status",
     "password_hash",
     "round_count",
+    "target_points",
     "entry_points",
     "created_at",
     "updated_at",
@@ -362,6 +364,7 @@ CREATE TABLE IF NOT EXISTS rooms (
   status TEXT DEFAULT 'WAITING',
   password_hash TEXT,
   round_count INTEGER DEFAULT 1,
+  target_points INTEGER DEFAULT 101,
   entry_points INTEGER DEFAULT 80,
   created_at TEXT DEFAULT (datetime('now')),
   updated_at TEXT DEFAULT (datetime('now')),
@@ -424,6 +427,13 @@ CREATE TABLE IF NOT EXISTS friends (
   UNIQUE (sender_id, receiver_id)
 );
 `);
+
+  // Safe idempotent schema migration for pre-existing SQLite DB files
+  try {
+    db.exec("ALTER TABLE rooms ADD COLUMN target_points INTEGER DEFAULT 101;");
+  } catch {
+    // Column already exists
+  }
 
   dbInstance = db;
   initializedDbPath = dbPath;
@@ -912,6 +922,7 @@ export interface RoomCreateInput {
   status?: string;
   passwordHash?: string | null;
   roundCount?: number;
+  targetPoints?: number;
   entryPoints?: number;
 }
 

@@ -38,8 +38,12 @@ import {
 } from "@/components/game/dragTypes";
 import { RotateDeviceOverlay } from "@/components/game/RotateDeviceOverlay";
 import { VideoErrorBoundary } from "@/components/video/VideoErrorBoundary";
-import { useLiveKitMedia, VideoOverlay } from "@/components/video/VideoOverlay";
-import { AttachableVideoTrack, VideoTile } from "@/components/video/VideoTile";
+import { useLiveKitMedia } from "@/components/video/VideoOverlay";
+import {
+  AttachableVideoTrack,
+  VideoTile,
+  VideoTileScale,
+} from "@/components/video/VideoTile";
 import { ClientEvaluator } from "@/lib/clientEvaluator";
 import { soundEffects } from "@/lib/soundEffects";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -51,6 +55,8 @@ import {
   GameStatus,
   MeldType,
   PlayerPublicInfo,
+  PublicGameState,
+  Suit,
 } from "@/types";
 
 interface TableProps {
@@ -60,12 +66,54 @@ interface TableProps {
   onDeclare: (melds: CardType[][], declareCardId: string) => void;
   onSubmitMelds: (melds: CardType[][]) => void;
   onNextRound: () => void;
+  onRestartMatch: () => void;
   onReturnToLobby: () => void;
   onDrop: () => void;
   onSort: (by: "SUIT" | "RANK") => void;
   onSendChat: (text: string) => void;
   onSendReaction: (emoji: string) => void;
   onExit: () => void;
+}
+
+const ACTION_SUIT_GLYPH: Record<Suit, string> = {
+  SPADES: "♠",
+  HEARTS: "♥",
+  DIAMONDS: "♦",
+  CLUBS: "♣",
+  JOKER: "★",
+};
+
+function formatMoveFeedMessage(
+  action: NonNullable<PublicGameState["lastAction"]>
+): string {
+  const cardLabel = action.card
+    ? action.card.isPrintedJoker
+      ? "Printed Joker"
+      : `${action.card.rank}${ACTION_SUIT_GLYPH[action.card.suit]}`
+    : "";
+
+  switch (action.type) {
+    case "DRAW_OPEN":
+      return cardLabel
+        ? `${action.username} picked ${cardLabel} from Open Pile`
+        : `${action.username} picked from Open Pile`;
+    case "DRAW_CLOSED":
+      return `${action.username} drew from Closed Deck`;
+    case "DISCARD":
+      return cardLabel
+        ? `${action.username} discarded ${cardLabel}`
+        : `${action.username} discarded a card`;
+    case "DROP":
+      return `${action.username} dropped this round`;
+    case "SKIP_OFFLINE":
+      return `${action.username} skipped (Offline)`;
+    case "DECLARE":
+      return `${action.username} declared!`;
+    case "SUBMIT_MELDS":
+      return `${action.username} submitted melds`;
+    default:
+      return `${action.username} made a move`;
+  }
 }
 
 type SeatSlot =
@@ -601,6 +649,16 @@ const TableStage: React.FC<TableStageProps> = ({
     ? getPlayerMedia(selfPlayer.id, true)
     : undefined;
 
+  // Part 2 Item 3: Adaptive Video Tile Sizing by total player count (2: lg, 3-4: md, 5-6: sm)
+  const totalPlayersCount = gameState?.players.length ?? 2;
+  const adaptiveTileScale: VideoTileScale = isCompactVideo
+    ? "sm"
+    : totalPlayersCount <= 2
+    ? "lg"
+    : totalPlayersCount <= 4
+    ? "md"
+    : "sm";
+
   return (
     <>
       {/* Floating Touch-Drag Ghost Preview (strictly pointer-events-none so elementFromPoint hits drop zones) */}
@@ -647,7 +705,7 @@ const TableStage: React.FC<TableStageProps> = ({
       )}
 
       {/* BAND 2: ROYAL 13 OVAL TABLE ARENA + PERIMETER OPPONENT VIDEO SEATS */}
-      <main className="flex-1 min-h-0 relative w-full max-w-[1440px] mx-auto flex items-center justify-center px-3 sm:px-8 lg:px-14 py-2 sm:py-3 mobile-landscape:px-2 mobile-landscape:py-1 overflow-hidden">
+      <main className="flex-1 min-h-0 relative w-full max-w-[1480px] mx-auto flex items-center justify-center px-2 sm:px-5 lg:px-8 py-1.5 sm:py-2 mobile-landscape:px-1.5 mobile-landscape:py-0.5 overflow-hidden">
         {/* Opponent Video Tiles Positioned Dynamically Around the Oval Table */}
         {seatedOpponents.map(({ player, slot }) => {
           const media = getPlayerMedia(player.id, false);
@@ -669,6 +727,7 @@ const TableStage: React.FC<TableStageProps> = ({
                 isSpeaking={media.isSpeaking}
                 cameraLabel={media.cameraLabel}
                 compact={isCompactVideo}
+                tileScale={adaptiveTileScale}
                 turnProgress={player.isCurrentTurn ? turnProgress : 1}
                 reactions={playerReactions}
                 onSpotlight={() => setSpotlightPlayerId(player.id)}
@@ -677,8 +736,8 @@ const TableStage: React.FC<TableStageProps> = ({
           );
         })}
 
-        {/* Luxury 3-Layer Oval Rummy Table (Brass Outer -> Leather Rail -> Radial Felt) */}
-        <div className="rummy-table-outer w-[84%] sm:w-[80%] lg:w-[76%] h-[78%] sm:h-[80%] mobile-landscape:w-[78%] mobile-landscape:h-[88%] rounded-[84px] sm:rounded-[150px] mobile-landscape:rounded-[64px] p-2 sm:p-3 mobile-landscape:p-1.5 flex items-center justify-center">
+        {/* Luxury 3-Layer Oval Rummy Table (Rebalanced proportions for larger video feeds & minimal dark margins) */}
+        <div className="rummy-table-outer w-[88%] sm:w-[84%] lg:w-[80%] h-[82%] sm:h-[84%] mobile-landscape:w-[82%] mobile-landscape:h-[90%] rounded-[84px] sm:rounded-[150px] mobile-landscape:rounded-[64px] p-2 sm:p-2.5 mobile-landscape:p-1.5 flex items-center justify-center">
           <div className="rummy-table-rail w-full h-full rounded-[76px] sm:rounded-[140px] mobile-landscape:rounded-[58px] p-1.5 sm:p-2.5 mobile-landscape:p-1 flex items-center justify-center">
             <div className="rummy-felt w-full h-full rounded-[68px] sm:rounded-[130px] mobile-landscape:rounded-[52px] flex flex-col items-center justify-center overflow-hidden px-4 sm:px-8 pt-5 sm:pt-7 pb-2 mobile-landscape:pt-3 mobile-landscape:pb-1 relative">
               {/* Gold Inner Decorative Ring */}
@@ -833,6 +892,7 @@ const TableStage: React.FC<TableStageProps> = ({
               isSpeaking={selfMedia?.isSpeaking ?? false}
               cameraLabel={selfMedia?.cameraLabel ?? "Camera Off"}
               compact={isCompactVideo}
+              tileScale={adaptiveTileScale}
               turnProgress={selfPlayer.isCurrentTurn ? turnProgress : 1}
               reactions={activeReactions.filter(
                 (r) => r.playerId === selfPlayer.id
@@ -1061,6 +1121,7 @@ export const Table: React.FC<TableProps> = ({
   onDeclare,
   onSubmitMelds,
   onNextRound,
+  onRestartMatch,
   onReturnToLobby,
   onDrop,
   onSort,
@@ -1098,6 +1159,11 @@ export const Table: React.FC<TableProps> = ({
   const [showChatDrawer, setShowChatDrawer] = useState(false);
   const [chatDraft, setChatDraft] = useState("");
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
+  const [turnFlashActive, setTurnFlashActive] = useState(false);
+  const [moveFeedToast, setMoveFeedToast] = useState<{
+    id: number;
+    text: string;
+  } | null>(null);
 
   // Riffle Shuffle & Staggered 13-Card Deal-In Animation State
   const [isShuffling, setIsShuffling] = useState(false);
@@ -1107,6 +1173,9 @@ export const Table: React.FC<TableProps> = ({
   const [dealBatchKey, setDealBatchKey] = useState(0);
 
   const prevTurnPlayerRef = useRef<string | null>(null);
+  const lastWarningSecondRef = useRef<number | null>(null);
+  const lastMoveTimestampRef = useRef<number | null>(null);
+  const originalTitleRef = useRef<string | null>(null);
   const celebratedKeyRef = useRef<string | null>(null);
   const chatEndRef = useRef<HTMLDivElement | null>(null);
   const prevStatusRef = useRef<GameStatus | null>(null);
@@ -1115,6 +1184,13 @@ export const Table: React.FC<TableProps> = ({
   const pendingDealAnimationRef = useRef<boolean>(false);
   const shuffleTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const dealTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const turnFlashTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const moveFeedTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Unlock Web Audio API on first user gesture
+  useEffect(() => {
+    soundEffects.installUnlock();
+  }, []);
 
   const triggerRiffleShuffle = useCallback(
     (label: string, withHandDeal: boolean) => {
@@ -1212,6 +1288,11 @@ export const Table: React.FC<TableProps> = ({
     return () => {
       if (shuffleTimeoutRef.current) clearTimeout(shuffleTimeoutRef.current);
       if (dealTimeoutRef.current) clearTimeout(dealTimeoutRef.current);
+      if (turnFlashTimeoutRef.current) clearTimeout(turnFlashTimeoutRef.current);
+      if (moveFeedTimeoutRef.current) clearTimeout(moveFeedTimeoutRef.current);
+      if (typeof document !== "undefined" && originalTitleRef.current !== null) {
+        document.title = originalTitleRef.current;
+      }
     };
   }, []);
 
@@ -1238,6 +1319,8 @@ export const Table: React.FC<TableProps> = ({
       ? gameState.turnEndsAt ?? null
       : gameState?.status === "TOSS"
       ? gameState.tossEndsAt ?? null
+      : gameState?.status === "ROUND_END"
+      ? gameState.nextRoundEndsAt ?? null
       : null;
 
   const activeTotalDurationMs =
@@ -1321,8 +1404,18 @@ export const Table: React.FC<TableProps> = ({
   }, [canSubmitOpponentMelds, handGroups]);
 
   const roundNumber = gameState?.roundNumber ?? 1;
-  const roundCount = gameState?.roundCount ?? 1;
-  const hasMoreRounds = roundNumber < roundCount;
+  const targetPoints = gameState?.targetPoints ?? 101;
+  const activeSurvivorsCount = useMemo(() => {
+    if (!gameState) return 0;
+    return gameState.players.filter(
+      (p) => !p.isEliminated && p.score < targetPoints
+    ).length;
+  }, [gameState, targetPoints]);
+  const hasMoreRounds = isRoundEnd && activeSurvivorsCount >= 2;
+  const nextRoundSeconds =
+    isRoundEnd && gameState?.nextRoundEndsAt
+      ? Math.max(0, Math.ceil((gameState.nextRoundEndsAt - nowMs) / 1000))
+      : null;
 
   const finalRankings = useMemo(() => {
     if (!gameState) return [];
@@ -1346,12 +1439,47 @@ export const Table: React.FC<TableProps> = ({
     );
   }, [gameState]);
 
-  // Turn alert sound cue when turn transitions to the local user
+  const isLocalTurn = Boolean(
+    gameState?.status === "PLAYING" &&
+      currentUserId &&
+      gameState.currentTurnPlayerId === currentUserId
+  );
+
+  // Part 2 Item 6: Non-intrusive Live Move Feed Toast on every table action
   useEffect(() => {
+    const action = gameState?.lastAction;
+    if (!action || !action.timestamp) return;
+    if (lastMoveTimestampRef.current === action.timestamp) return;
+    lastMoveTimestampRef.current = action.timestamp;
+
+    setMoveFeedToast({
+      id: action.timestamp,
+      text: formatMoveFeedMessage(action),
+    });
+
+    if (moveFeedTimeoutRef.current) {
+      clearTimeout(moveFeedTimeoutRef.current);
+    }
+    moveFeedTimeoutRef.current = setTimeout(() => {
+      setMoveFeedToast(null);
+    }, 3600);
+  }, [gameState?.lastAction]);
+
+  // Part 2 Item 7: Turn-Start Device Alerts (two-tone chime + vibrate + 0.8s gold flash + document.title)
+  useEffect(() => {
+    if (typeof document !== "undefined" && originalTitleRef.current === null) {
+      originalTitleRef.current = document.title;
+    }
+
     if (!gameState || gameState.status !== "PLAYING") {
       prevTurnPlayerRef.current = null;
+      lastWarningSecondRef.current = null;
+      if (typeof document !== "undefined" && originalTitleRef.current !== null) {
+        document.title = originalTitleRef.current;
+      }
       return;
     }
+
     const turnId = gameState.currentTurnPlayerId ?? null;
     if (
       turnId &&
@@ -1359,9 +1487,54 @@ export const Table: React.FC<TableProps> = ({
       turnId === currentUserId
     ) {
       soundEffects.playTurnAlert(isMuted);
+      if (typeof navigator !== "undefined" && typeof navigator.vibrate === "function") {
+        try {
+          navigator.vibrate([100, 50, 100]);
+        } catch {}
+      }
+      setTurnFlashActive(true);
+      if (turnFlashTimeoutRef.current) {
+        clearTimeout(turnFlashTimeoutRef.current);
+      }
+      turnFlashTimeoutRef.current = setTimeout(() => {
+        setTurnFlashActive(false);
+      }, 820);
+      lastWarningSecondRef.current = null;
     }
+
+    if (typeof document !== "undefined") {
+      if (turnId === currentUserId) {
+        document.title = "🔔 YOUR TURN! — Royal 13 Rummy";
+      } else if (originalTitleRef.current !== null) {
+        document.title = originalTitleRef.current;
+      }
+    }
+
     prevTurnPlayerRef.current = turnId;
   }, [gameState, currentUserId, isMuted]);
+
+  // Part 2 Item 7: Low-timer warning tick at <= 5s + short vibrate at 5s
+  useEffect(() => {
+    if (!isLocalTurn || displayedSeconds > 5 || displayedSeconds <= 0) {
+      if (displayedSeconds > 5) {
+        lastWarningSecondRef.current = null;
+      }
+      return;
+    }
+    if (lastWarningSecondRef.current === displayedSeconds) return;
+    lastWarningSecondRef.current = displayedSeconds;
+
+    soundEffects.playTurnWarningTick(isMuted);
+    if (
+      displayedSeconds === 5 &&
+      typeof navigator !== "undefined" &&
+      typeof navigator.vibrate === "function"
+    ) {
+      try {
+        navigator.vibrate(60);
+      } catch {}
+    }
+  }, [isLocalTurn, displayedSeconds, isMuted]);
 
   // Confetti + win fanfare celebration on ROUND_END / GAME_OVER
   useEffect(() => {
@@ -1455,6 +1628,37 @@ export const Table: React.FC<TableProps> = ({
           onClose={() => setShowDeclareModal(false)}
         />
       )}
+
+      {/* Turn-Start 0.8s Golden Inner-Edge Viewport Flash */}
+      {turnFlashActive && (
+        <div
+          aria-hidden="true"
+          className="turn-edge-flash pointer-events-none fixed inset-0 z-40"
+        />
+      )}
+
+      {/* Non-Intrusive Live Move Feed Toast Pill */}
+      {moveFeedToast && !error && (
+        <div
+          key={moveFeedToast.id}
+          className="pointer-events-none fixed top-12 sm:top-14 mobile-landscape:top-9 left-1/2 -translate-x-1/2 z-40 glass-pill px-3.5 py-1 rounded-full border border-[#f6e09e]/45 text-[10px] sm:text-xs font-semibold text-amber-100 shadow-xl whitespace-nowrap"
+        >
+          {moveFeedToast.text}
+        </div>
+      )}
+
+      {/* Eliminated / Mid-Round Reconnected Spectator Banner */}
+      {gameState?.status === "PLAYING" &&
+        currentPlayerInfo &&
+        (currentPlayerInfo.isEliminated ||
+          currentPlayerInfo.hasDropped ||
+          currentPlayerInfo.canPlayCurrentRound === false) && (
+          <div className="pointer-events-none fixed top-[74px] sm:top-[82px] mobile-landscape:top-[58px] left-1/2 -translate-x-1/2 z-40 px-3 py-1 rounded-full bg-slate-950/90 border border-rose-400/50 text-rose-200 text-[10px] sm:text-xs font-bold shadow-lg whitespace-nowrap">
+            {currentPlayerInfo.isEliminated
+              ? `Eliminated (${currentPlayerInfo.score}/${targetPoints} pts) — Spectating live table`
+              : "Sitting out this round — you will automatically rejoin next round"}
+          </div>
+        )}
 
       {/* Error Toast */}
       {error && (
@@ -1615,9 +1819,9 @@ export const Table: React.FC<TableProps> = ({
         </div>
       </header>
 
-      {/* BAND 2 + BAND 3 wrapped in ONE resilient LiveKit connection */}
+      {/* BAND 2 + BAND 3 (LiveKit VideoOverlay is mounted persistently in room/[code]/page.tsx) */}
       <VideoErrorBoundary fallback={stageElement}>
-        <VideoOverlay roomCode={roomCode}>{stageElement}</VideoOverlay>
+        {stageElement}
       </VideoErrorBoundary>
 
       {/* COLLAPSIBLE TABLE CHAT DRAWER (Room-Scoped Socket.IO CHAT_MESSAGE) */}
@@ -1725,7 +1929,7 @@ export const Table: React.FC<TableProps> = ({
                     Table Scoreboard
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Round {roundNumber} of {roundCount} • Lowest points leads
+                    Pool {targetPoints} • Round {roundNumber} • Lowest points leads
                   </p>
                 </div>
               </div>
@@ -1946,15 +2150,15 @@ export const Table: React.FC<TableProps> = ({
         </div>
       )}
 
-      {/* ROUND END / GAME OVER RESULTS MODAL */}
+      {/* ROUND END / GAME OVER RESULTS MODAL WITH VISUAL HAND REVEAL */}
       {(isRoundEnd || isGameOver) && gameState && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="glass-panel max-w-xl w-full max-h-[90dvh] overflow-y-auto border border-amber-400/50 rounded-3xl p-5 sm:p-6 shadow-2xl space-y-5">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-md flex items-center justify-center p-3 sm:p-4">
+          <div className="glass-panel max-w-3xl w-full max-h-[92dvh] overflow-y-auto border border-amber-400/50 rounded-3xl p-4 sm:p-6 shadow-2xl space-y-4">
             <div className="text-center space-y-1">
-              <div className="inline-flex items-center justify-center w-12 h-12 rounded-full bg-amber-500/20 border border-amber-400/60 text-[#f6e09e] mb-1">
-                <Trophy className="w-6 h-6" />
+              <div className="inline-flex items-center justify-center w-11 h-11 rounded-full bg-amber-500/20 border border-amber-400/60 text-[#f6e09e] mb-0.5">
+                <Trophy className="w-5 h-5" />
               </div>
-              <h2 className="font-serif-luxury text-2xl font-bold text-[#f6e09e]">
+              <h2 className="font-serif-luxury text-xl sm:text-2xl font-bold text-[#f6e09e]">
                 {isGameOver
                   ? "Match Complete!"
                   : `Round ${roundNumber} Complete!`}
@@ -1966,7 +2170,7 @@ export const Table: React.FC<TableProps> = ({
                     <strong className="text-white">
                       {finalRankings[0].username}
                     </strong>{" "}
-                    ({finalRankings[0].totalScore} total pts)
+                    ({finalRankings[0].totalScore} / {targetPoints} pts)
                   </>
                 ) : (
                   <>
@@ -1974,88 +2178,132 @@ export const Table: React.FC<TableProps> = ({
                     <strong className="text-white">
                       {winnerPlayer?.username || "Winner"}
                     </strong>{" "}
-                    (0 pts)
+                    (0 pts) • Pool {targetPoints} Mode
                   </>
                 )}
               </p>
             </div>
 
-            {gameState.winnerMelds && gameState.winnerMelds.length > 0 && (
-              <div className="bg-slate-950/70 border border-white/10 rounded-2xl p-3 space-y-2">
-                <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-                  Winning Melds ({winnerPlayer?.username || "Winner"})
-                </div>
-                <div className="flex flex-wrap items-center gap-2">
-                  {gameState.winnerMelds.map((meld, idx) => (
-                    <div key={idx} className="flex items-center -space-x-4">
-                      {meld.map((c) => (
-                        <Card key={c.id} card={c} size="sm" disabled />
-                      ))}
-                    </div>
-                  ))}
-                </div>
+            <div className="space-y-2.5">
+              <div className="flex items-center justify-between text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                <span>
+                  {isGameOver
+                    ? "Final Standings & Revealed Hands"
+                    : `Round ${roundNumber} Scores & Revealed Hands`}
+                </span>
+                <span className="text-amber-300/90 font-mono">
+                  Elimination: {targetPoints}+ pts
+                </span>
               </div>
-            )}
 
-            <div className="space-y-2">
-              <div className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                {isGameOver
-                  ? "Final Standings"
-                  : `Round ${roundNumber} Scores`}
-              </div>
               {finalRankings.map((entry, idx) => {
                 const roundInfo = gameState.roundScores?.[entry.playerId];
+                const playerObj = gameState.players.find(
+                  (p) => p.id === entry.playerId
+                );
                 const isRoundWinner = entry.playerId === gameState.winnerId;
+                const isEliminated = Boolean(
+                  playerObj?.isEliminated || entry.totalScore >= targetPoints
+                );
+                const revealedGroups =
+                  gameState.roundRevealedHands?.[entry.playerId] ??
+                  (isRoundWinner && gameState.winnerMelds
+                    ? gameState.winnerMelds
+                    : []);
+
                 return (
                   <div
                     key={entry.playerId}
-                    className={`flex items-center justify-between p-3 rounded-xl border ${
+                    className={`flex flex-col gap-2 p-3 rounded-2xl border ${
                       isGameOver && idx === 0
-                        ? "bg-amber-500/15 border-amber-400/50"
+                        ? "bg-amber-500/15 border-amber-400/55"
                         : isRoundWinner
-                        ? "bg-emerald-950/60 border-emerald-500/40"
-                        : "bg-slate-900/70 border-white/10"
+                        ? "bg-emerald-950/60 border-emerald-500/45"
+                        : isEliminated
+                        ? "bg-rose-950/35 border-rose-500/40"
+                        : "bg-slate-900/75 border-white/10"
                     }`}
                   >
-                    <div className="flex items-center gap-2.5 min-w-0">
-                      <span
-                        className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
-                          idx === 0
-                            ? "bg-gradient-to-r from-[#f6e09e] to-[#d4af37] text-slate-950"
-                            : "bg-slate-800 text-slate-300"
-                        }`}
-                      >
-                        #{entry.rank}
-                      </span>
-                      <div className="min-w-0">
-                        <div className="text-sm font-bold text-white truncate">
-                          {entry.username}
-                          {entry.playerId === currentUserId ? " (You)" : ""}
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span
+                          className={`w-6 h-6 rounded-full flex items-center justify-center text-xs font-black shrink-0 ${
+                            idx === 0
+                              ? "bg-gradient-to-r from-[#f6e09e] to-[#d4af37] text-slate-950"
+                              : "bg-slate-800 text-slate-300"
+                          }`}
+                        >
+                          #{entry.rank}
+                        </span>
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-1.5 flex-wrap">
+                            <span className="text-sm font-bold text-white truncate">
+                              {entry.username}
+                              {entry.playerId === currentUserId ? " (You)" : ""}
+                            </span>
+                            {isRoundWinner && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-emerald-500/20 border border-emerald-400/50 text-emerald-300 text-[9px] font-black uppercase">
+                                Winner
+                              </span>
+                            )}
+                            {isEliminated && (
+                              <span className="px-1.5 py-0.5 rounded-full bg-rose-600/90 border border-rose-300/40 text-white text-[9px] font-black uppercase tracking-wider">
+                                ELIMINATED
+                              </span>
+                            )}
+                          </div>
+                          {roundInfo?.reason && (
+                            <div className="text-[11px] text-slate-400">
+                              {roundInfo.reason}
+                            </div>
+                          )}
                         </div>
-                        {roundInfo?.reason && (
-                          <div className="text-[11px] text-slate-400">
-                            {roundInfo.reason}
+                      </div>
+
+                      <div className="text-right shrink-0">
+                        {roundInfo && (
+                          <div
+                            className={`text-sm font-mono font-bold ${
+                              roundInfo.points === 0
+                                ? "text-emerald-400"
+                                : "text-red-400"
+                            }`}
+                          >
+                            +{roundInfo.points} pts
                           </div>
                         )}
+                        <div className="text-[11px] font-mono text-[#f6e09e]">
+                          Total: {entry.totalScore} / {targetPoints}
+                        </div>
                       </div>
                     </div>
 
-                    <div className="text-right shrink-0">
-                      {roundInfo && (
-                        <div
-                          className={`text-sm font-mono font-bold ${
-                            roundInfo.points === 0
-                              ? "text-emerald-400"
-                              : "text-red-400"
-                          }`}
-                        >
-                          +{roundInfo.points} pts
-                        </div>
-                      )}
-                      <div className="text-[11px] font-mono text-[#f6e09e]">
-                        Total: {entry.totalScore} pts
+                    {/* Visual Round-End Hand Reveal: Compact Mini-Cards grouped by Meld */}
+                    {revealedGroups.length > 0 && (
+                      <div className="flex flex-wrap items-center gap-2 pt-1.5 border-t border-white/10">
+                        {revealedGroups.map((group, gIdx) => {
+                          const evalRes = ClientEvaluator.evaluateMeld(group);
+                          const badge = getMeldBadgeLabel(evalRes.type);
+                          return (
+                            <div
+                              key={gIdx}
+                              className="flex flex-col items-start gap-1 bg-slate-950/75 border border-white/10 rounded-xl px-2 py-1.5"
+                            >
+                              <span
+                                className={`text-[8px] font-bold px-1.5 py-0.5 rounded-full border leading-none ${badge.className}`}
+                              >
+                                {badge.label}
+                              </span>
+                              <div className="flex items-center -space-x-2">
+                                {group.map((c) => (
+                                  <Card key={c.id} card={c} size="xs" disabled />
+                                ))}
+                              </div>
+                            </div>
+                          );
+                        })}
                       </div>
-                    </div>
+                    )}
                   </div>
                 );
               })}
@@ -2072,26 +2320,46 @@ export const Table: React.FC<TableProps> = ({
                     >
                       <Play className="w-4 h-4 fill-current" />
                       <span>
-                        Start Round {roundNumber + 1} / {roundCount}
+                        Start Round {roundNumber + 1}
+                        {nextRoundSeconds !== null ? ` (${nextRoundSeconds}s)` : ""}
                       </span>
                     </button>
                   ) : (
                     <div className="flex-1 py-3 px-4 rounded-xl bg-slate-900 border border-white/10 text-center text-xs text-slate-300 font-semibold">
-                      Waiting for host to start Round {roundNumber + 1}...
+                      {nextRoundSeconds !== null
+                        ? `Round ${roundNumber + 1} starting automatically in ${nextRoundSeconds}s...`
+                        : `Waiting for host to start Round ${roundNumber + 1}...`}
                     </div>
                   )}
                 </>
               )}
 
               {isGameOver && (
-                <button
-                  type="button"
-                  onClick={onReturnToLobby}
-                  className="flex-1 py-3 rounded-xl bg-gradient-to-r from-[#f6e09e] to-[#d4af37] hover:brightness-110 text-slate-950 font-black text-xs uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-lg"
-                >
-                  <RotateCcw className="w-4 h-4" />
-                  <span>Return to Lobby</span>
-                </button>
+                <>
+                  {isHost ? (
+                    <button
+                      type="button"
+                      onClick={onRestartMatch}
+                      className="flex-1 py-3 rounded-xl bg-gradient-to-r from-emerald-400 via-emerald-300 to-[#f6e09e] hover:brightness-110 text-slate-950 font-black text-xs uppercase tracking-wider transition flex items-center justify-center gap-2 shadow-xl shadow-emerald-500/25"
+                    >
+                      <RefreshCw className="w-4 h-4" />
+                      <span>Play Again (Same Room)</span>
+                    </button>
+                  ) : (
+                    <div className="flex-1 py-3 px-4 rounded-xl bg-slate-900 border border-white/10 text-center text-xs text-slate-300 font-semibold">
+                      Waiting for host to start a rematch...
+                    </div>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={onReturnToLobby}
+                    className="sm:w-auto px-4 py-3 rounded-xl bg-amber-500/20 hover:bg-amber-500/30 border border-amber-400/40 text-amber-200 font-bold text-xs uppercase tracking-wider transition flex items-center justify-center gap-1.5"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Lobby</span>
+                  </button>
+                </>
               )}
 
               <button

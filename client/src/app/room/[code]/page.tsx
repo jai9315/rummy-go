@@ -12,6 +12,7 @@ import React, { useEffect, useState } from "react";
 import { Table } from "@/components/game/Table";
 import { InviteToast } from "@/components/lobby/InviteToast";
 import { LobbyView } from "@/components/lobby/LobbyView";
+import { VideoOverlay } from "@/components/video/VideoOverlay";
 import { useSocket } from "@/hooks/useSocket";
 import { api, ApiError } from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -108,6 +109,7 @@ export default function RoomPage() {
     toggleReady,
     startGame,
     nextRound,
+    restartMatch,
     returnToLobby,
     drawCard,
     discardCard,
@@ -371,52 +373,53 @@ export default function RoomPage() {
     );
   }
 
-  // Active game, Toss, Show phase, Round End, or Game Over: render Royal 13 Table
-  if (
+  const isActiveGameView = Boolean(
     gameState &&
-    (gameState.status === "TOSS" ||
-      gameState.status === "PLAYING" ||
-      gameState.status === "DEALING" ||
-      gameState.status === "SHOW" ||
-      gameState.status === "DECLARED" ||
-      gameState.status === "ROUND_END" ||
-      gameState.status === "GAME_OVER")
-  ) {
-    return (
-      <div className="h-[100dvh] w-full overflow-hidden">
-        <InviteToast />
-        <Table
-          roomCode={roomCode}
-          onDraw={drawCard}
-          onDiscard={discardCard}
-          onDeclare={declareGame}
-          onSubmitMelds={submitMelds}
-          onNextRound={nextRound}
-          onReturnToLobby={returnToLobby}
-          onDrop={dropGame}
-          onSort={sortHand}
-          onSendChat={sendChatMessage}
-          onSendReaction={sendReaction}
-          onExit={handleExitRoom}
-        />
-      </div>
-    );
-  }
+      (gameState.status === "TOSS" ||
+        gameState.status === "PLAYING" ||
+        gameState.status === "DEALING" ||
+        gameState.status === "SHOW" ||
+        gameState.status === "DECLARED" ||
+        gameState.status === "ROUND_END" ||
+        gameState.status === "GAME_OVER")
+  );
 
-  // Default: Lobby Waiting Room
+  // Persistent LiveKit VideoOverlay stays mounted across WAITING, TOSS, PLAYING, ROUND_END, GAME_OVER & RESTART_MATCH
   return (
-    <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center">
+    <VideoOverlay roomCode={roomCode}>
       <InviteToast />
-      <LobbyView
-        roomCode={roomCode}
-        roomData={roomData}
-        roomError={roomError}
-        onToggleReady={toggleReady}
-        onStartGame={startGame}
-        onKickPlayer={kickPlayer}
-        onInviteFriend={inviteFriend}
-        onLeaveRoom={handleExitRoom}
-      />
-    </div>
+      {isActiveGameView ? (
+        <div className="h-[100dvh] w-full overflow-hidden">
+          <Table
+            roomCode={roomCode}
+            onDraw={drawCard}
+            onDiscard={discardCard}
+            onDeclare={declareGame}
+            onSubmitMelds={submitMelds}
+            onNextRound={nextRound}
+            onRestartMatch={restartMatch}
+            onReturnToLobby={returnToLobby}
+            onDrop={dropGame}
+            onSort={sortHand}
+            onSendChat={sendChatMessage}
+            onSendReaction={sendReaction}
+            onExit={handleExitRoom}
+          />
+        </div>
+      ) : (
+        <div className="min-h-screen bg-zinc-950 text-white flex flex-col items-center justify-center">
+          <LobbyView
+            roomCode={roomCode}
+            roomData={roomData}
+            roomError={roomError}
+            onToggleReady={toggleReady}
+            onStartGame={startGame}
+            onKickPlayer={kickPlayer}
+            onInviteFriend={inviteFriend}
+            onLeaveRoom={handleExitRoom}
+          />
+        </div>
+      )}
+    </VideoOverlay>
   );
 }

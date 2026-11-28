@@ -19,7 +19,7 @@ const RANK_ORDER: Record<Rank, number> = {
 
 export class Evaluator {
   public static isJoker(card: Card): boolean {
-    return card.isPrintedJoker || card.isWildJoker;
+    return card.isPrintedJoker || card.rank === "PRINTED_JOKER" || card.isWildJoker;
   }
 
   public static getCardPoints(card: Card): number {
@@ -87,7 +87,9 @@ export class Evaluator {
 
     // Printed Jokers can never appear in a pure sequence.
     // Wild Jokers are permitted only when used in their natural suit & rank.
-    if (cards.some((c) => c.isPrintedJoker)) return false;
+    if (cards.some((c) => c.isPrintedJoker || c.rank === "PRINTED_JOKER" || c.suit === "JOKER")) {
+      return false;
+    }
 
     // All cards must have identical suit
     const suit = cards[0].suit;

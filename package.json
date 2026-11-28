@@ -15,7 +15,7 @@
     "build": "npm run build:server && npm run build:client",
     "start:server": "node server/dist/index.js",
     "start:client": "cd client && next start -p 3000",
-    "test": "npm run build:server && node --test server/tests/engine.test.cjs server/tests/privacy_multiplayer.test.cjs server/tests/phase1_security.test.cjs server/tests/dbErrors.test.cjs",
+    "test": "npm run build:server && node --test server/tests/engine.test.cjs server/tests/rummy_rules_audit.test.cjs server/tests/sprint_7_fixes.test.cjs server/tests/privacy_multiplayer.test.cjs server/tests/phase1_security.test.cjs server/tests/dbErrors.test.cjs",
     "test:e2e": "npm run build:server && node server/tests/run_e2e.cjs",
     "prisma:generate": "prisma generate",
     "prisma:push": "prisma db push"

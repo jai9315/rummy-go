@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import {
   Card,
+  ChatBubble,
   FeltTheme,
   LobbyPlayer,
   PublicGameState,
@@ -44,6 +45,7 @@ interface GameStoreState {
   isMuted: boolean;
   feltTheme: FeltTheme;
   chatMessages: TableChatMessage[];
+  activeChatBubbles: Record<string, ChatBubble>;
   unreadChatCount: number;
   activeReactions: TableReaction[];
   showDeclareModal: boolean;
@@ -61,6 +63,7 @@ interface GameStoreState {
   toggleMuted: () => void;
   setFeltTheme: (theme: FeltTheme) => void;
   addChatMessage: (msg: TableChatMessage) => void;
+  clearChatBubble: (playerId: string, messageId?: string) => void;
   markChatRead: () => void;
   addReaction: (reaction: TableReaction) => void;
   removeReaction: (reactionId: string) => void;
@@ -91,6 +94,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   isMuted: false,
   feltTheme: readInitialFeltTheme(),
   chatMessages: [],
+  activeChatBubbles: {},
   unreadChatCount: 0,
   activeReactions: [],
   showDeclareModal: false,
@@ -190,8 +194,28 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
   addChatMessage: (msg) =>
     set((state) => ({
       chatMessages: [...state.chatMessages, msg].slice(-80),
+      activeChatBubbles: {
+        ...state.activeChatBubbles,
+        [msg.playerId]: {
+          id: msg.id,
+          playerId: msg.playerId,
+          username: msg.username,
+          text: msg.text,
+          timestamp: msg.timestamp,
+        },
+      },
       unreadChatCount: state.unreadChatCount + 1,
     })),
+
+  clearChatBubble: (playerId, messageId) =>
+    set((state) => {
+      const existing = state.activeChatBubbles[playerId];
+      if (!existing) return state;
+      if (messageId && existing.id !== messageId) return state;
+      const next = { ...state.activeChatBubbles };
+      delete next[playerId];
+      return { activeChatBubbles: next };
+    }),
 
   markChatRead: () => set({ unreadChatCount: 0 }),
 
@@ -343,6 +367,7 @@ export const useGameStore = create<GameStoreState>((set, get) => ({
       error: null,
       kickedMessage: null,
       chatMessages: [],
+      activeChatBubbles: {},
       unreadChatCount: 0,
       activeReactions: [],
       showDeclareModal: false,

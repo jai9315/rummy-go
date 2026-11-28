@@ -6,20 +6,26 @@ import {
   Copy,
   Lock,
   LogOut,
+  Mic,
+  MicOff,
   Play,
   QrCode,
   Send,
   Share2,
   UserPlus,
-  UserX,
   Users,
+  Video,
+  VideoOff,
+  X,
 } from "lucide-react";
-import Image from "next/image";
 import React, { useCallback, useEffect, useState } from "react";
+import { useLiveKitMedia } from "@/components/video/VideoOverlay";
+import { VideoTile } from "@/components/video/VideoTile";
 import { api } from "../../lib/api";
 import { useAuthStore } from "../../store/useAuthStore";
 import { useGameStore } from "../../store/useGameStore";
-import { FriendItem, RoomInfo } from "../../types";
+import { useVideoStore } from "../../store/useVideoStore";
+import { FriendItem, PlayerPublicInfo, RoomInfo } from "../../types";
 
 interface LobbyViewProps {
   roomCode: string;
@@ -45,7 +51,12 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
   const user = useAuthStore((s) => s.user);
   const lobbyPlayers = useGameStore((s) => s.lobbyPlayers);
   const socketError = useGameStore((s) => s.error);
-  const [copiedLink, setCopiedLink] = useState(false);
+  const { isConnected: isVideoConnected, getPlayerMedia } = useLiveKitMedia();
+  const { isCameraOff, isMicMuted, toggleCamera, toggleMic } = useVideoStore();
+  const isCameraOn = !isCameraOff;
+  const isMicOn = !isMicMuted;
+
+  const [shareFeedback, setShareFeedback] = useState<string | null>(null);
   const [copiedCode, setCopiedCode] = useState(false);
   const [showQR, setShowQR] = useState(false);
   const [showInviteFriends, setShowInviteFriends] = useState(false);
@@ -85,6 +96,8 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       ? `${window.location.origin}/room/${roomCode}`
       : `http://localhost:3000/room/${roomCode}`;
 
+  const poolTarget = roomData?.targetPoints ?? 101;
+
   const currentPlayer = lobbyPlayers.find((p) => p.userId === user?.id);
   const isHost = Boolean(currentPlayer?.isHost);
   const canStart =
@@ -94,31 +107,50 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
   const displayedError = roomError || socketError;
 
-  const copyToClipboard = (text: string, type: "link" | "code") => {
-    navigator.clipboard.writeText(text);
-    if (type === "link") {
-      setCopiedLink(true);
-      setTimeout(() => setCopiedLink(false), 2000);
-    } else {
-      setCopiedCode(true);
-      setTimeout(() => setCopiedCode(false), 2000);
+  const copyCodeToClipboard = () => {
+    navigator.clipboard?.writeText(roomCode).catch(() => {});
+    setCopiedCode(true);
+    setTimeout(() => setCopiedCode(false), 2000);
+  };
+
+  // Part 2 Item 8: One-tap native Share Invite with clipboard fallback
+  const handleOneTapShare = async () => {
+    const shareText = `Join my Royal 13 Rummy table (Pool ${poolTarget}) with live video! Room Code: ${roomCode}`;
+    try {
+      if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+        await navigator.share({
+          title: `Royal 13 Rummy — Room ${roomCode}`,
+          text: shareText,
+          url: inviteUrl,
+        });
+        setShareFeedback("Shared!");
+        setTimeout(() => setShareFeedback(null), 2200);
+        return;
+      }
+    } catch (err: unknown) {
+      // If user dismissed native share sheet, don't overwrite clipboard silently
+      if (err instanceof Error && err.name === "AbortError") {
+        return;
+      }
+    }
+
+    try {
+      await navigator.clipboard.writeText(`${shareText}\n${inviteUrl}`);
+      setShareFeedback("Invite Copied!");
+      setTimeout(() => setShareFeedback(null), 2200);
+    } catch {
+      setShareFeedback("Copy Code Above");
+      setTimeout(() => setShareFeedback(null), 2200);
     }
   };
 
-  const shareWhatsApp = () => {
-    const text = encodeURIComponent(
-      `Join my Indian Rummy table with live video call! Room Code: ${roomCode}\nLink: ${inviteUrl}`
-    );
-    window.open(`https://api.whatsapp.com/send?text=${text}`, "_blank");
-  };
-
   return (
-    <div className="w-full max-w-4xl mx-auto flex flex-col items-center p-4 sm:p-8">
+    <div className="w-full max-w-5xl mx-auto flex flex-col items-center p-4 sm:p-6">
       {/* Visible Error Banner for both roomError and socket/gameStore error */}
       {displayedError && (
         <div
           role="alert"
-          className="w-full mb-5 p-3.5 rounded-2xl bg-red-600/20 border border-red-500/50 text-red-200 text-xs font-semibold flex items-center justify-center gap-2 shadow-lg"
+          className="w-full mb-4 p-3.5 rounded-2xl bg-red-600/20 border border-red-500/50 text-red-200 text-xs font-semibold flex items-center justify-center gap-2 shadow-lg"
         >
           <AlertCircle className="w-4 h-4 text-red-400 shrink-0" />
           <span>{displayedError}</span>
@@ -126,14 +158,23 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
       )}
 
       {/* Lobby Header */}
-      <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-4 p-5 rounded-2xl bg-zinc-900/80 backdrop-blur-md border border-amber-500/30 shadow-2xl mb-8">
+      <div className="w-full flex flex-col sm:flex-row items-center justify-between gap-4 p-4 sm:p-5 rounded-2xl bg-zinc-900/85 backdrop-blur-md border border-amber-500/30 shadow-2xl mb-6">
         <div>
           <div className="flex items-center gap-2 mb-1 flex-wrap">
             <span className="text-xs font-bold text-amber-400 uppercase tracking-wider">
               Private Table Lobby
             </span>
-            <span className="bg-emerald-500/20 text-emerald-400 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/30">
-              Points Rummy
+            <span className="bg-emerald-500/20 text-emerald-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-emerald-500/35">
+              Pool {poolTarget} Points
+            </span>
+            <span
+              className={`text-[10px] font-bold px-2 py-0.5 rounded-full border ${
+                isVideoConnected
+                  ? "bg-emerald-500/15 text-emerald-300 border-emerald-400/40"
+                  : "bg-slate-800 text-slate-400 border-slate-700"
+              }`}
+            >
+              {isVideoConnected ? "● Live Video Ready" : "Connecting Video..."}
             </span>
             {roomData?.hasPassword && (
               <span className="bg-amber-500/20 text-amber-300 text-[10px] font-bold px-2 py-0.5 rounded-full border border-amber-500/30 flex items-center gap-1">
@@ -142,18 +183,16 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               </span>
             )}
           </div>
-          <h1 className="text-2xl font-black text-white tracking-wide">
+          <h1 className="text-xl sm:text-2xl font-black text-white tracking-wide">
             {roomData?.roomName || `${roomCode} Rummy Table`}
           </h1>
           <p className="text-xs text-zinc-400 mt-0.5">
-            13 Cards Indian Rummy • {roomData?.roundCount || 1}{" "}
-            {(roomData?.roundCount || 1) === 1 ? "Round" : "Rounds"} •{" "}
-            {roomData?.turnTimeLimitSeconds ?? 30}s Turn •{" "}
-            {roomData?.entryPoints ?? 80} pts • 2-{roomData?.maxPlayers || 6} Players
+            13-Card Indian Rummy • Pool {poolTarget} (Eliminated at {poolTarget}+ pts) •{" "}
+            {roomData?.turnTimeLimitSeconds ?? 30}s Turn • 2-{roomData?.maxPlayers || 6} Players
           </p>
         </div>
 
-        {/* Room Code & Invite Quick Pill */}
+        {/* Room Code & One-Tap Invite Controls */}
         <div className="flex items-center gap-2 flex-wrap justify-center">
           <div className="flex items-center gap-2 bg-zinc-950 px-3 py-1.5 rounded-xl border border-zinc-800">
             <span className="text-xs text-zinc-400 font-medium">Code:</span>
@@ -161,7 +200,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
               {roomCode}
             </strong>
             <button
-              onClick={() => copyToClipboard(roomCode, "code")}
+              onClick={copyCodeToClipboard}
               className="text-zinc-400 hover:text-white transition p-1"
               title="Copy Room Code"
             >
@@ -175,6 +214,20 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
           <button
             type="button"
+            onClick={handleOneTapShare}
+            className="flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-400 via-yellow-400 to-amber-500 hover:brightness-110 text-zinc-950 text-xs font-black uppercase tracking-wider shadow-lg shadow-amber-500/25 transition"
+            title="Share invite link & room code"
+          >
+            {shareFeedback ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Share2 className="w-4 h-4" />
+            )}
+            <span>{shareFeedback || "Share Invite"}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={() => setShowInviteFriends((prev) => !prev)}
             className={`flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold border transition ${
               showInviteFriends
@@ -183,27 +236,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             }`}
           >
             <UserPlus className="w-4 h-4" />
-            <span>Invite Friends</span>
-          </button>
-
-          <button
-            onClick={() => copyToClipboard(inviteUrl, "link")}
-            className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-800 hover:bg-zinc-700 text-xs font-semibold text-zinc-200 border border-zinc-700 transition"
-          >
-            {copiedLink ? (
-              <Check className="w-4 h-4 text-emerald-400" />
-            ) : (
-              <Share2 className="w-4 h-4 text-amber-400" />
-            )}
-            <span>{copiedLink ? "Copied" : "Copy Link"}</span>
-          </button>
-
-          <button
-            onClick={shareWhatsApp}
-            className="p-2 rounded-xl bg-emerald-600 hover:bg-emerald-500 text-white transition shadow-md shadow-emerald-600/20"
-            title="Share on WhatsApp"
-          >
-            <Share2 className="w-4 h-4" />
+            <span>Friends</span>
           </button>
 
           {roomData?.qrCode && (
@@ -229,7 +262,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
       {/* Invite Online Friends Picker */}
       {showInviteFriends && (
-        <div className="w-full mb-6 p-4 rounded-2xl bg-zinc-900/90 border border-amber-500/40 shadow-xl">
+        <div className="w-full mb-5 p-4 rounded-2xl bg-zinc-900/90 border border-amber-500/40 shadow-xl">
           <div className="flex items-center justify-between mb-3">
             <div>
               <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider">
@@ -250,7 +283,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
           {friends.length === 0 ? (
             <p className="text-xs text-zinc-500 py-3 text-center">
-              No friends yet. Add friends from your Profile page or share the room code above!
+              No friends yet. Add friends from your Profile page or tap Share Invite above!
             </p>
           ) : (
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 max-h-56 overflow-y-auto pr-1">
@@ -335,7 +368,7 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
       {/* QR Code Modal Overlay */}
       {showQR && roomData?.qrCode && (
-        <div className="mb-6 p-4 rounded-2xl bg-zinc-950 border border-amber-500/40 flex flex-col items-center">
+        <div className="mb-5 p-4 rounded-2xl bg-zinc-950 border border-amber-500/40 flex flex-col items-center">
           <h3 className="text-xs font-bold text-amber-300 uppercase tracking-wider mb-2">
             Scan to Join on Mobile
           </h3>
@@ -351,84 +384,142 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
         </div>
       )}
 
-      {/* 6-Seat Virtual Lobby Table */}
-      <div className="w-full relative min-h-[360px] rounded-3xl bg-felt-pattern border-4 border-amber-600/40 shadow-2xl p-6 flex flex-col items-center justify-between">
-        <div className="text-center mb-4">
-          <span className="text-xs font-bold text-emerald-300/80 uppercase tracking-widest flex items-center justify-center gap-1.5">
+      {/* Virtual Lobby Table with Persistent LiveKit Video Tiles */}
+      <div className="w-full relative min-h-[380px] rounded-3xl bg-felt-pattern border-4 border-amber-600/40 shadow-2xl p-4 sm:p-6 flex flex-col items-center justify-between">
+        <div className="w-full flex items-center justify-between gap-3 mb-4 flex-wrap">
+          <span className="text-xs font-bold text-emerald-200/90 uppercase tracking-widest flex items-center gap-1.5">
             <Users className="w-4 h-4 text-amber-400" />
             <span>
-              Seats ({lobbyPlayers.length} / {roomData?.maxPlayers || 6})
+              Seated ({lobbyPlayers.length} / {roomData?.maxPlayers || 6})
             </span>
           </span>
+
+          {/* Persistent Waiting-Room Mic & Camera Controls */}
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={toggleMic}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                isMicOn
+                  ? "bg-emerald-600/25 text-emerald-200 border-emerald-400/45 hover:bg-emerald-600/35"
+                  : "bg-red-600/25 text-red-200 border-red-400/45 hover:bg-red-600/35"
+              }`}
+              title={isMicOn ? "Mute Microphone" : "Unmute Microphone"}
+            >
+              {isMicOn ? (
+                <Mic className="w-3.5 h-3.5" />
+              ) : (
+                <MicOff className="w-3.5 h-3.5" />
+              )}
+              <span>{isMicOn ? "Mic On" : "Mic Off"}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={toggleCamera}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-bold border transition ${
+                isCameraOn
+                  ? "bg-emerald-600/25 text-emerald-200 border-emerald-400/45 hover:bg-emerald-600/35"
+                  : "bg-zinc-900/80 text-zinc-300 border-zinc-700 hover:bg-zinc-800"
+              }`}
+              title={isCameraOn ? "Turn Camera Off" : "Turn Camera On"}
+            >
+              {isCameraOn ? (
+                <Video className="w-3.5 h-3.5" />
+              ) : (
+                <VideoOff className="w-3.5 h-3.5" />
+              )}
+              <span>{isCameraOn ? "Cam On" : "Cam Off"}</span>
+            </button>
+          </div>
         </div>
 
-        {/* Seats Grid */}
-        <div className="w-full grid grid-cols-2 sm:grid-cols-3 gap-4 sm:gap-6 my-auto">
+        {/* Live Video Seats Grid */}
+        <div className="w-full grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 my-auto">
           {Array.from({ length: roomData?.maxPlayers || 6 }).map((_, idx) => {
             const seatNum = idx + 1;
             const player = lobbyPlayers.find((p) => p.seatNumber === seatNum);
             const canKick = isHost && player && player.userId !== user?.id;
 
+            if (!player) {
+              return (
+                <div
+                  key={seatNum}
+                  className="aspect-[16/10] rounded-2xl border border-dashed border-emerald-500/30 bg-emerald-950/35 flex flex-col items-center justify-center text-emerald-200/45"
+                >
+                  <span className="text-xs font-bold uppercase tracking-wider">
+                    Seat #{seatNum}
+                  </span>
+                  <span className="text-[10px] mt-0.5">Waiting for player...</span>
+                </div>
+              );
+            }
+
+            const isSelf = player.userId === user?.id;
+            const media = getPlayerMedia(player.userId, isSelf);
+            const tilePlayer: PlayerPublicInfo = {
+              id: player.userId,
+              username: player.username,
+              profileImage: player.profileImage || "",
+              seatNumber: player.seatNumber,
+              cardCount: 0,
+              isCurrentTurn: false,
+              isReady: player.isReady,
+              connectionStatus: player.connectionStatus,
+              hasDropped: false,
+              score: 0,
+            };
+
             return (
               <div
                 key={seatNum}
-                className={`relative flex flex-col items-center justify-center p-3 rounded-2xl border transition-all ${
-                  player
-                    ? "bg-zinc-950/80 border-amber-500/50 shadow-xl"
-                    : "bg-emerald-950/40 border-dashed border-emerald-700/40"
-                }`}
+                className="relative flex flex-col gap-2 p-2.5 rounded-2xl bg-zinc-950/80 border border-amber-500/45 shadow-xl"
               >
-                {player ? (
-                  <>
-                    {canKick && (
-                      <button
-                        type="button"
-                        onClick={() => onKickPlayer(player.userId)}
-                        className="absolute top-2 right-2 p-1 rounded-lg bg-zinc-900 hover:bg-red-950 text-zinc-400 hover:text-red-400 border border-zinc-800 hover:border-red-500/40 transition"
-                        title={`Kick ${player.username}`}
-                        aria-label={`Kick ${player.username}`}
-                      >
-                        <UserX className="w-3.5 h-3.5" />
-                      </button>
-                    )}
-
-                    <div className="relative w-14 h-14 rounded-full overflow-hidden border-2 border-amber-400 shadow-md mb-2">
-                      <Image
-                        src={
-                          player.profileImage ||
-                          `https://api.dicebear.com/7.x/bottts/svg?seed=${player.username}`
-                        }
-                        alt={player.username}
-                        fill
-                        className="object-cover"
-                      />
-                    </div>
-                    <div className="flex items-center gap-1">
-                      <span className="text-xs font-bold text-white truncate max-w-[100px]">
-                        {player.username}
-                      </span>
-                      {player.isHost && (
-                        <span className="bg-amber-500 text-zinc-950 text-[9px] font-black px-1 rounded">
-                          HOST
-                        </span>
-                      )}
-                    </div>
-                    <span
-                      className={`text-[10px] font-bold mt-1.5 px-2 py-0.5 rounded-full ${
-                        player.isReady
-                          ? "bg-emerald-500/20 text-emerald-400 border border-emerald-500/40"
-                          : "bg-zinc-800 text-zinc-400 border border-zinc-700"
-                      }`}
-                    >
-                      {player.isReady ? "Ready ✓" : "Waiting"}
-                    </span>
-                  </>
-                ) : (
-                  <div className="flex flex-col items-center justify-center py-4 text-emerald-300/40">
-                    <span className="text-xs font-semibold">Seat {seatNum}</span>
-                    <span className="text-[10px]">Empty</span>
-                  </div>
+                {/* Host Kick (✕) Button — strictly in WAITING lobby */}
+                {canKick && (
+                  <button
+                    type="button"
+                    onClick={() => onKickPlayer(player.userId)}
+                    className="absolute top-3.5 right-3.5 z-30 w-6 h-6 rounded-full bg-red-600/90 hover:bg-red-500 text-white flex items-center justify-center shadow-lg border border-red-300/40 transition"
+                    title={`Kick ${player.username}`}
+                    aria-label={`Kick ${player.username}`}
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 )}
+
+                <VideoTile
+                  player={tilePlayer}
+                  isSelf={isSelf}
+                  tileScale="lobby"
+                  hideCardCount
+                  videoTrack={media.videoTrack}
+                  isMuted={media.isMuted}
+                  isSpeaking={media.isSpeaking}
+                  cameraLabel={media.cameraLabel}
+                />
+
+                <div className="flex items-center justify-between px-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="text-xs font-bold text-white truncate">
+                      {player.username}
+                    </span>
+                    {player.isHost && (
+                      <span className="bg-amber-500 text-zinc-950 text-[9px] font-black px-1.5 py-0.5 rounded uppercase">
+                        HOST
+                      </span>
+                    )}
+                  </div>
+                  <span
+                    className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${
+                      player.isReady
+                        ? "bg-emerald-500/20 text-emerald-300 border border-emerald-500/40"
+                        : "bg-zinc-800 text-zinc-400 border border-zinc-700"
+                    }`}
+                  >
+                    {player.isReady ? "Ready ✓" : "Waiting"}
+                  </span>
+                </div>
               </div>
             );
           })}
@@ -436,7 +527,6 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
 
         {/* Lobby Action Controls */}
         <div className="w-full flex flex-col sm:flex-row items-center justify-center gap-3 mt-6 pt-4 border-t border-emerald-800/40">
-          {/* Player Toggle Ready */}
           <button
             onClick={onToggleReady}
             disabled={!currentPlayer}
@@ -454,7 +544,6 @@ export const LobbyView: React.FC<LobbyViewProps> = ({
             </span>
           </button>
 
-          {/* Host Start Game Button */}
           {isHost && (
             <button
               onClick={onStartGame}

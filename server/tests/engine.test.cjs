@@ -326,7 +326,7 @@ test("First drop penalty when player has not drawn", () => {
 });
 
 test("Per-player first drop penalty (20 pts) even after another player dropped, and all droppers in roundScores", () => {
-  const game = new Game("game-drop2", "room-1", "ABC123");
+  const game = new Game("game-drop2", "room-1", "ABC123", { roundCount: 1 });
   game.addPlayer("p1", "Alice", "", 1);
   game.addPlayer("p2", "Bob", "", 2);
   game.addPlayer("p3", "Carol", "", 3);
@@ -460,7 +460,7 @@ test("Three consecutive timeouts during DRAW phase cause auto-drop", () => {
 });
 
 test("Timer cleanup after game completion (endRound clears timer)", () => {
-  const game = new Game("game-timer-cleanup", "room-1", "ABC123");
+  const game = new Game("game-timer-cleanup", "room-1", "ABC123", { roundCount: 1 });
   game.addPlayer("p1", "Alice", "", 1);
   game.addPlayer("p2", "Bob", "", 2);
   game.setPlayerReady("p1", true);
@@ -528,7 +528,7 @@ test("Deck exhaustion: game does not stall when both decks empty", () => {
 });
 
 test("First drop penalty: 2-player game, seat 1 drops without drawing", () => {
-  const game = new Game("game-drop-2p", "room-1", "ABC123");
+  const game = new Game("game-drop-2p", "room-1", "ABC123", { roundCount: 1 });
   game.addPlayer("p1", "Alice", "", 1);
   game.addPlayer("p2", "Bob", "", 2);
   game.setPlayerReady("p1", true);
@@ -570,7 +570,7 @@ test("First drop penalty: 4-player game, non-host seat drops without drawing", (
 });
 
 test("Per-player first drop vs middle drop in 3-player game with all droppers scored", () => {
-  const game = new Game("game-mid-drop", "room-1", "ABC123");
+  const game = new Game("game-mid-drop", "room-1", "ABC123", { roundCount: 1 });
   game.addPlayer("p1", "Alice", "", 1);
   game.addPlayer("p2", "Bob", "", 2);
   game.addPlayer("p3", "Carol", "", 3);
@@ -638,46 +638,52 @@ test("Printed Joker cut: wildRank is 'A' and drawing an Ace marks isWildJoker = 
     game.setPlayerReady("p2", true);
     game.startRound();
 
-    if (game.getPublicState().wildJoker.isPrintedJoker) {
+    if (
+      game.getPublicState().wildJoker.isPrintedJoker &&
+      game["deck"].getRemainingCards().some((c) => c.rank === "A")
+    ) {
       foundPrintedJokerCut = true;
       break;
     }
     game.stopTimer();
   }
 
-  assert.strictEqual(foundPrintedJokerCut, true, "Should hit a Printed Joker cut within 500 deals");
-  assert.strictEqual(game.getWildRank(), "A", "wildRank must be 'A' when a Printed Joker is cut");
-  assert.strictEqual(game.getPublicState().wildRank, "A", "PublicGameState.wildRank must be 'A'");
+  try {
+    assert.strictEqual(foundPrintedJokerCut, true, "Should hit a Printed Joker cut within 500 deals");
+    assert.strictEqual(game.getWildRank(), "A", "wildRank must be 'A' when a Printed Joker is cut");
+    assert.strictEqual(game.getPublicState().wildRank, "A", "PublicGameState.wildRank must be 'A'");
 
-  // Verify every Ace currently in player hands is marked isWildJoker = true
-  for (const pid of ["p1", "p2"]) {
-    for (const c of game.getPlayerCards(pid)) {
-      if (c.rank === "A") {
-        assert.strictEqual(c.isWildJoker, true, `Dealt Ace ${c.id} must be marked isWildJoker=true`);
+    // Verify every Ace currently in player hands is marked isWildJoker = true
+    for (const pid of ["p1", "p2"]) {
+      for (const c of game.getPlayerCards(pid)) {
+        if (c.rank === "A") {
+          assert.strictEqual(c.isWildJoker, true, `Dealt Ace ${c.id} must be marked isWildJoker=true`);
+        }
       }
     }
-  }
 
-  // Draw from the closed deck across turns until an Ace is drawn, and verify it is marked isWildJoker = true
-  let drewAceFromClosed = false;
-  for (let turn = 0; turn < 80; turn++) {
-    const state = game.getPublicState();
-    if (state.closedDeckCount === 0) break;
-    const pid = game.getCurrentTurnPlayerId();
-    const { drawnCard } = game.drawCard(pid, "CLOSED");
-    if (drawnCard.rank === "A") {
-      assert.strictEqual(
-        drawnCard.isWildJoker,
-        true,
-        `Ace ${drawnCard.id} drawn from closed deck must have isWildJoker=true when Printed Joker was cut`
-      );
-      drewAceFromClosed = true;
-      break;
+    // Draw from the closed deck across turns until an Ace is drawn, and verify it is marked isWildJoker = true
+    let drewAceFromClosed = false;
+    for (let turn = 0; turn < 80; turn++) {
+      const state = game.getPublicState();
+      if (state.closedDeckCount === 0) break;
+      const pid = game.getCurrentTurnPlayerId();
+      const { drawnCard } = game.drawCard(pid, "CLOSED");
+      if (drawnCard.rank === "A") {
+        assert.strictEqual(
+          drawnCard.isWildJoker,
+          true,
+          `Ace ${drawnCard.id} drawn from closed deck must have isWildJoker=true when Printed Joker was cut`
+        );
+        drewAceFromClosed = true;
+        break;
+      }
+      game.discardCard(pid, drawnCard.id);
     }
-    game.discardCard(pid, drawnCard.id);
+    assert.strictEqual(drewAceFromClosed, true, "Should draw at least one Ace from closed deck to verify wild marking");
+  } finally {
+    if (game) game.stopTimer();
   }
-  assert.strictEqual(drewAceFromClosed, true, "Should draw at least one Ace from closed deck to verify wild marking");
-  game.stopTimer();
 });
 
 test("Natural Wild Joker inside a Pure Sequence passes Evaluator.validateDeclaration", () => {
@@ -984,15 +990,19 @@ test("Multi-round progression: startNextRound increments roundNumber, accumulate
   assert.strictEqual(r1.publicState.totalScores["p2"], 0);
   assert.strictEqual(r1.publicState.rankings, undefined, "rankings only present on GAME_OVER");
 
-  // Start Round 2
+  // Start Round 2 — opening turn rotates circularly (#1 p1 -> #2 p2)
   game.startNextRound("game-multi-round_r2");
   assert.strictEqual(game.roundNumber, 2);
   assert.strictEqual(game.status, "PLAYING");
+  assert.strictEqual(game.getCurrentTurnPlayerId(), "p2", "Round 2 opening turn must rotate circularly to seat #2 (p2)");
   assert.strictEqual(game.getPlayerCards("p1").length, 13);
   assert.strictEqual(game.getPlayerCards("p2").length, 13);
   assert.strictEqual(game.getPublicState().totalScores["p1"], 20, "Round 1 cumulative score preserved in Round 2");
 
-  // Round 2: p1 drops again (+20 -> cumulative 40 pts) -> final round -> GAME_OVER
+  // p2 plays a turn so turn passes to p1, then p1 drops again (+20 -> cumulative 40 pts) -> GAME_OVER
+  game.drawCard("p2", "CLOSED");
+  const p2Hand = game.getPlayerCards("p2");
+  game.discardCard("p2", p2Hand[p2Hand.length - 1].id);
   const r2 = game.drop("p1");
   assert.strictEqual(r2.publicState.status, "GAME_OVER", "Final round must transition to GAME_OVER");
   assert.strictEqual(r2.publicState.roundNumber, 2);

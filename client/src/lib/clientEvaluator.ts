@@ -19,7 +19,7 @@ const RANK_ORDER: Record<Rank, number> = {
 
 export class ClientEvaluator {
   public static isJoker(card: Card): boolean {
-    return card.isPrintedJoker || card.isWildJoker;
+    return card.isPrintedJoker || card.rank === "PRINTED_JOKER" || card.isWildJoker;
   }
 
   public static getCardPoints(card: Card): number {
@@ -100,7 +100,9 @@ export class ClientEvaluator {
 
   public static isValidPureSequence(cards: Card[]): boolean {
     if (cards.length < 3) return false;
-    if (cards.some((c) => c.isPrintedJoker)) return false;
+    if (cards.some((c) => c.isPrintedJoker || c.rank === "PRINTED_JOKER" || c.suit === "JOKER")) {
+      return false;
+    }
 
     const suit = cards[0].suit;
     if (cards.some((c) => c.suit !== suit)) return false;
@@ -165,20 +167,30 @@ export class ClientEvaluator {
     }
 
     const span = values[values.length - 1] - values[0] + 1;
-    if (span > naturalCards.length + jokerCount) return false;
-    return jokerCount >= neededJokers;
+    const totalCards = naturalCards.length + jokerCount;
+
+    // Sequence length cannot exceed available cards
+    if (span > totalCards) return false;
+
+    // We need at least neededJokers to bridge gaps; excess jokers can be placed at either end
+    if (jokerCount < neededJokers) return false;
+
+    // Check if the sequence with excess jokers can fit within 13-rank suit boundaries (1..13 or 2..14)
+    const minPossible = aceHigh ? 2 : 1;
+    const maxPossible = aceHigh ? 14 : 13;
+    const excessJokers = jokerCount - neededJokers;
+    const finalSpan = span + excessJokers;
+
+    return finalSpan <= maxPossible - minPossible + 1;
   }
 
   public static isValidSet(cards: Card[]): boolean {
     if (cards.length < 3 || cards.length > 4) return false;
 
     const naturalCards: Card[] = [];
-    let jokerCount = 0;
 
     for (const card of cards) {
-      if (this.isJoker(card)) {
-        jokerCount++;
-      } else {
+      if (!this.isJoker(card)) {
         naturalCards.push(card);
       }
     }
@@ -195,5 +207,64 @@ export class ClientEvaluator {
     }
 
     return true;
+  }
+
+  /**
+   * Validates a complete declaration of 13 cards divided into melds.
+   * Mirrors server Evaluator.validateDeclaration() verbatim:
+   * 1. Total cards must be 13.
+   * 2. All melds must be individually valid (pure sequence, impure sequence, or set).
+   * 3. At least one PURE sequence is mandatory.
+   * 4. At least two total sequences are mandatory.
+   */
+  public static validateDeclaration(melds: Card[][]): {
+    isValid: boolean;
+    reason?: string;
+    evaluatedMelds: MeldGroup[];
+  } {
+    const totalCards = melds.reduce((sum, m) => sum + m.length, 0);
+    if (totalCards !== 13) {
+      return {
+        isValid: false,
+        reason: `A valid declaration must have exactly 13 cards, found ${totalCards}`,
+        evaluatedMelds: melds.map((m) => this.evaluateMeld(m)),
+      };
+    }
+
+    const evaluatedMelds = melds.map((m) => this.evaluateMeld(m));
+
+    const invalidMeld = evaluatedMelds.find((m) => !m.isValid);
+    if (invalidMeld) {
+      return {
+        isValid: false,
+        reason: invalidMeld.reason || "One or more card groups are invalid",
+        evaluatedMelds,
+      };
+    }
+
+    const pureCount = evaluatedMelds.filter((m) => m.type === "PURE_SEQUENCE").length;
+    const impureCount = evaluatedMelds.filter((m) => m.type === "IMPURE_SEQUENCE").length;
+    const totalSequences = pureCount + impureCount;
+
+    if (pureCount < 1) {
+      return {
+        isValid: false,
+        reason: "At least one Pure Sequence is mandatory to declare",
+        evaluatedMelds,
+      };
+    }
+
+    if (totalSequences < 2) {
+      return {
+        isValid: false,
+        reason: "At least two sequences are mandatory to declare",
+        evaluatedMelds,
+      };
+    }
+
+    return {
+      isValid: true,
+      evaluatedMelds,
+    };
   }
 }

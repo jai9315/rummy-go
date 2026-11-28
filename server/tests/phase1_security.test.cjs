@@ -380,8 +380,8 @@ test("Phase 1: .env-only boot, DB integrity, auth select, friends include, LiveK
   mC.socket.emit("JOIN_ROOM", { roomCode: rc2 });
   await wait(250);
   assert.ok(
-    mC.events.some((e) => e.ev === "ERROR" && /in progress/i.test(e.data?.message)),
-    `Expected in-progress error for mid-game joiner, got ${JSON.stringify(mC.events)}`
+    mC.events.some((e) => e.ev === "ERROR" && /already started/i.test(e.data?.message)),
+    `Expected "Game has already started" error for mid-game joiner, got ${JSON.stringify(mC.events)}`
   );
   const midGameLeaks = mC.events.filter(
     (e) =>

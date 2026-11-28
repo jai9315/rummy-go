@@ -81,6 +81,7 @@ export const api = {
   createRoom: (body: {
     roomName?: string;
     maxPlayers?: number;
+    targetPoints?: number;
     roundCount?: number;
     entryPoints?: number;
     turnTimeLimitSeconds?: number;

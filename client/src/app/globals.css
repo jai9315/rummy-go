@@ -205,30 +205,74 @@ body {
   animation: floatEmoji 2.2s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
-/* Ornate Royal 13 Card Back */
+/* Ornate Royal 13 Card Back — Royal Navy & Gold Filigree */
 .card-back {
   background:
-    radial-gradient(circle at 50% 50%, rgba(212, 175, 55, 0.25) 0%, transparent 55%),
+    radial-gradient(circle at 50% 50%, rgba(246, 224, 158, 0.28) 0%, transparent 56%),
     repeating-linear-gradient(
       45deg,
-      rgba(212, 175, 55, 0.12) 0px,
-      rgba(212, 175, 55, 0.12) 2px,
-      transparent 2px,
+      rgba(212, 175, 55, 0.16) 0px,
+      rgba(212, 175, 55, 0.16) 1.5px,
+      transparent 1.5px,
       transparent 6px
     ),
     repeating-linear-gradient(
       -45deg,
-      rgba(212, 175, 55, 0.12) 0px,
-      rgba(212, 175, 55, 0.12) 2px,
-      transparent 2px,
+      rgba(212, 175, 55, 0.16) 0px,
+      rgba(212, 175, 55, 0.16) 1.5px,
+      transparent 1.5px,
       transparent 6px
     ),
-    linear-gradient(145deg, #162447 0%, #0d162e 55%, #1f112d 100%);
-  border: 2px solid #e7d7b1;
+    linear-gradient(155deg, #132145 0%, #0a1228 54%, #1b1334 100%);
+  border: 2px solid #ecd9a8;
   box-shadow:
-    inset 0 0 0 3px #0d162e,
-    inset 0 0 0 4.5px rgba(212, 175, 55, 0.55),
-    0 8px 18px rgba(0, 0, 0, 0.45);
+    inset 0 0 0 2.5px #0b132a,
+    inset 0 0 0 4px rgba(212, 175, 55, 0.65),
+    0 8px 18px rgba(0, 0, 0, 0.48);
+}
+
+/* Bespoke Royal 13 Warm Ivory Card Face */
+.card-royal-face {
+  background: linear-gradient(180deg, #fcf9f0 0%, #f8f2e4 58%, #efe5cf 100%);
+  box-shadow:
+    inset 0 0 0 1px rgba(212, 175, 55, 0.28),
+    0 6px 16px rgba(0, 0, 0, 0.45);
+}
+
+/* Turn-Start Golden Inner-Edge Viewport Flash (0.8s) */
+@keyframes turnEdgeFlash {
+  0% {
+    opacity: 0;
+  }
+  18% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.turn-edge-flash {
+  box-shadow:
+    inset 0 0 0 4px rgba(246, 224, 158, 0.9),
+    inset 0 0 56px 14px rgba(212, 175, 55, 0.45);
+  animation: turnEdgeFlash 0.8s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+/* Floating Chat Speech Bubble Pop-In */
+@keyframes chatBubblePop {
+  0% {
+    opacity: 0;
+    transform: translate(-50%, 6px) scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
+.chat-bubble-pop {
+  animation: chatBubblePop 0.22s cubic-bezier(0.22, 1, 0.36, 1) forwards;
 }
 
 /* Draw Phase Deck Highlight Pulse */

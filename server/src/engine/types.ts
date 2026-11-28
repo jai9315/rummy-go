@@ -44,6 +44,9 @@ export interface PlayerPublicInfo {
   isReady: boolean;
   connectionStatus: "CONNECTED" | "DISCONNECTED";
   hasDropped: boolean;
+  isEliminated: boolean;
+  offlineTurnsMissed: number;
+  canPlayCurrentRound: boolean;
   score: number;
 }
 
@@ -85,6 +88,8 @@ export interface PublicGameState {
   status: GameStatus;
   roundNumber: number;
   roundCount: number;
+  targetPoints: number;
+  deckCount: number;
   currentTurnPlayerId: string;
   turnPhase: TurnPhase;
   turnTimeLimitSeconds: number;
@@ -92,6 +97,7 @@ export interface PublicGameState {
   turnEndsAt?: number | null;
   showTimeLimitSeconds?: number;
   showEndsAt?: number | null;
+  nextRoundEndsAt?: number | null;
   tossResults?: TossResult[];
   tossEndsAt?: number | null;
   wildJoker: Card | null;
@@ -104,12 +110,20 @@ export interface PublicGameState {
   lastAction?: {
     playerId: string;
     username: string;
-    type: "DRAW_CLOSED" | "DRAW_OPEN" | "DISCARD" | "DROP" | "DECLARE" | "SUBMIT_MELDS";
+    type:
+      | "DRAW_CLOSED"
+      | "DRAW_OPEN"
+      | "DISCARD"
+      | "DROP"
+      | "DECLARE"
+      | "SUBMIT_MELDS"
+      | "SKIP_OFFLINE";
     card?: Card;
     timestamp: number;
   };
   winnerId?: string;
   winnerMelds?: Card[][];
+  roundRevealedHands?: Record<string, Card[][]>;
   submittedMeldPlayerIds?: string[];
   roundScores?: Record<string, { points: number; totalScore: number; reason: string }>;
   roundHistory?: RoundHistoryEntry[];

@@ -647,7 +647,9 @@ test("PHASE 3: 3-player DROP round end populates winnerId, per-player first drop
   await new Promise((r) => setTimeout(r, 800));
 
   const latestState = (thirdP.session.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
-  check("Single-round drop ends with status GAME_OVER", latestState?.status === "GAME_OVER", `status=${latestState?.status}`);
+  check("Pool 101 3-player drop ends Round 1 in ROUND_END (scores < 101)", latestState?.status === "ROUND_END", `status=${latestState?.status}`);
+  check("3-player round uses 1 deck (deckCount === 1)", latestState?.deckCount === 1, `deckCount=${latestState?.deckCount}`);
+  check("roundRevealedHands populated on ROUND_END", Boolean(latestState?.roundRevealedHands && latestState.roundRevealedHands[thirdP.token.userId]));
   check("winnerId populated as remaining player", latestState?.winnerId === thirdP.token.userId, `winnerId=${latestState?.winnerId}`);
   check("All 3 players appear in roundScores", latestState?.roundScores && Object.keys(latestState.roundScores).length === 3, `keys=${Object.keys(latestState?.roundScores || {})}`);
   check("first seat drop is 20 pts", latestState?.roundScores?.[firstP.token.userId]?.points === 20);
@@ -709,10 +711,10 @@ test("PHASE 3: SORT_HAND persists sorted order on server across reconnect", asyn
   s2.disconnect();
 });
 
-test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalScores, and finishes in GAME_OVER", async () => {
-  console.log("\n=== Test: Multi-round NEXT_ROUND & totalScores ===");
-  const tokens = await Promise.all([1, 2].map((i) => createUser(1010 + i)));
-  const roomCode = await createRoom(tokens[0].token, { roundCount: 2 });
+test("PHASE 3: Multi-round Pool mode NEXT_ROUND rotates opening turn, eliminates >= targetPoints, finishes in GAME_OVER, and supports RESTART_MATCH", async () => {
+  console.log("\n=== Test: Multi-round Pool NEXT_ROUND, elimination & RESTART_MATCH ===");
+  const tokens = await Promise.all([1, 2, 3].map((i) => createUser(1010 + i)));
+  const roomCode = await createRoom(tokens[0].token, { targetPoints: 40 });
 
   const s1 = new PlayerSession(tokens[0].token, tokens[0].username);
   const s2 = new PlayerSession(tokens[1].token, tokens[1].username);
@@ -724,15 +726,26 @@ test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalS
   await s1.emit("START_GAME");
   await new Promise((r) => setTimeout(r, 900));
 
+  // Verify non-member join is rejected after game starts
+  const sIntruder = new PlayerSession(tokens[2].token, tokens[2].username);
+  await sIntruder.connect(roomCode);
+  await new Promise((r) => setTimeout(r, 400));
+  check(
+    "Non-member JOIN_ROOM after game start receives 'Game has already started'",
+    (sIntruder.events["ERROR"] || []).some((e) => e?.message === "Game has already started"),
+    `errors=${JSON.stringify(sIntruder.events["ERROR"])}`
+  );
+  sIntruder.disconnect();
+
   const [firstP, secondP] = getTurnOrder([s1, s2], tokens);
 
-  // Round 1: first turn player drops (+20 pts) -> ROUND_END (round 1 of 2)
+  // Round 1: first turn player drops (+20 pts < 40) -> ROUND_END
   await firstP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 700));
 
   const r1End = (s1.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
-  check("Round 1 of 2 ends in ROUND_END", r1End?.status === "ROUND_END", `status=${r1End?.status}`);
-  check("Round 1 roundNumber=1 and roundCount=2", r1End?.roundNumber === 1 && r1End?.roundCount === 2);
+  check("Round 1 Pool 40 ends in ROUND_END", r1End?.status === "ROUND_END", `status=${r1End?.status}`);
+  check("Round 1 roundNumber=1 and targetPoints=40", r1End?.roundNumber === 1 && r1End?.targetPoints === 40);
   check("Round 1 totalScores tracks dropped=20, winner=0", r1End?.totalScores?.[firstP.token.userId] === 20 && r1End?.totalScores?.[secondP.token.userId] === 0);
 
   // Non-host NEXT_ROUND must be rejected
@@ -742,7 +755,7 @@ test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalS
   const s2NewErrors = (s2.events["ERROR"] || []).slice(preS2Errors);
   check("Non-host NEXT_ROUND rejected with ERROR", s2NewErrors.length >= 1, `errors=${JSON.stringify(s2NewErrors)}`);
 
-  // Host emits NEXT_ROUND -> Round 2 starts cleanly
+  // Host emits NEXT_ROUND -> Round 2 starts cleanly with circular opening turn rotation (#1 -> #2)
   const preHandCount1 = (s1.events["PRIVATE_HAND_UPDATE"] || []).length;
   const preHandCount2 = (s2.events["PRIVATE_HAND_UPDATE"] || []).length;
   await s1.emit("NEXT_ROUND");
@@ -752,18 +765,38 @@ test("PHASE 3: Multi-round NEXT_ROUND increments roundNumber, accumulates totalS
   const r2Hand1 = (s1.events["PRIVATE_HAND_UPDATE"] || []).slice(preHandCount1).slice(-1)[0];
   const r2Hand2 = (s2.events["PRIVATE_HAND_UPDATE"] || []).slice(preHandCount2).slice(-1)[0];
   check("NEXT_ROUND transitions to PLAYING with roundNumber=2", r2Start?.status === "PLAYING" && r2Start?.roundNumber === 2, `status=${r2Start?.status}, round=${r2Start?.roundNumber}`);
+  check("NEXT_ROUND rotates opening turn circularly to seat #2", r2Start?.currentTurnPlayerId === secondP.token.userId, `turn=${r2Start?.currentTurnPlayerId}`);
   check("NEXT_ROUND deals fresh 13 cards to both players", r2Hand1?.cards?.length === 13 && r2Hand2?.cards?.length === 13);
   check("NEXT_ROUND sets server-authoritative turnEndsAt", typeof r2Start?.turnEndsAt === "number" && r2Start.turnEndsAt > Date.now());
   check("Round 2 preserves cumulative totalScores from Round 1", r2Start?.totalScores?.[firstP.token.userId] === 20);
 
-  // Round 2: first turn player drops again (+20 -> cumulative 40 pts) -> GAME_OVER
+  // Round 2: seat #2 plays 1 turn so turn moves to seat #1, then seat #1 drops (+20 -> cumulative 40 >= 40 -> ELIMINATED -> GAME_OVER)
+  await secondP.session.emit("DRAW_CARD", { source: "CLOSED" });
+  await new Promise((r) => setTimeout(r, 400));
+  const secondHandR2 = (secondP.session.events["PRIVATE_HAND_UPDATE"] || []).slice(-1)[0].cards;
+  await secondP.session.emit("DISCARD_CARD", { cardId: secondHandR2[secondHandR2.length - 1].id });
+  await new Promise((r) => setTimeout(r, 400));
+
   await firstP.session.emit("DROP");
   await new Promise((r) => setTimeout(r, 800));
 
   const r2End = (s1.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
-  check("Final round transitions to GAME_OVER", r2End?.status === "GAME_OVER", `status=${r2End?.status}`);
+  check("Pool elimination transitions to GAME_OVER", r2End?.status === "GAME_OVER", `status=${r2End?.status}`);
   check("Cumulative totalScores accumulates across rounds (dropped=40, winner=0)", r2End?.totalScores?.[firstP.token.userId] === 40 && r2End?.totalScores?.[secondP.token.userId] === 0, `totalScores=${JSON.stringify(r2End?.totalScores)}`);
+  check("Eliminated player flagged isEliminated=true on GAME_OVER", r2End?.players?.find((p) => p.id === firstP.token.userId)?.isEliminated === true);
   check("GAME_OVER includes sorted rankings (lowest score first)", Array.isArray(r2End?.rankings) && r2End.rankings[0]?.playerId === secondP.token.userId && r2End.rankings[1]?.totalScore === 40, `rankings=${JSON.stringify(r2End?.rankings)}`);
+
+  // Host RESTART_MATCH resets scores & starts fresh match in the same room!
+  await s1.emit("RESTART_MATCH");
+  await new Promise((r) => setTimeout(r, 900));
+  const rematchState = (s1.events["GAME_STATE_UPDATE"] || []).slice(-1)[0];
+  check(
+    "Host RESTART_MATCH restarts match in same room with reset scores",
+    rematchState?.status === "PLAYING" &&
+      rematchState?.roundNumber === 1 &&
+      rematchState?.players?.every((p) => p.score === 0 && !p.isEliminated),
+    `status=${rematchState?.status}, round=${rematchState?.roundNumber}`
+  );
 
   // Return to lobby without leaving room
   await s1.emit("RETURN_TO_LOBBY");
@@ -985,6 +1018,7 @@ test("PHASE 3: Socket.IO DECLARE -> SHOW -> SUBMIT_MELDS reduced score & all-dis
     turnTimeLimitSeconds: 20,
     showTimeLimitSeconds: 20,
     tossDurationMs: 50,
+    roundEndAutoAdvanceMs: 0,
   });
   ioServer.on("connection", (sock) => rm.handleConnection(sock));
 

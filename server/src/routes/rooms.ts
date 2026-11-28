@@ -53,6 +53,7 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
           roomName?: unknown;
           maxPlayers?: unknown;
           roundCount?: unknown;
+          targetPoints?: unknown;
           entryPoints?: unknown;
           turnTimeLimitSeconds?: unknown;
           password?: unknown;
@@ -60,6 +61,7 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
 
         const parsedMaxPlayers = parseInt(String(body?.maxPlayers ?? ""), 10);
         const parsedRoundCount = parseInt(String(body?.roundCount ?? ""), 10);
+        const parsedTargetPoints = parseInt(String(body?.targetPoints ?? ""), 10);
         const parsedEntryPoints = parseInt(String(body?.entryPoints ?? ""), 10);
         const parsedTurnLimit = parseInt(String(body?.turnTimeLimitSeconds ?? ""), 10);
         const roomNameInput = typeof body?.roomName === "string" ? body.roomName.trim() : "";
@@ -68,6 +70,14 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
         const turnTimeLimitSeconds = Number.isNaN(parsedTurnLimit)
           ? 30
           : Math.min(120, Math.max(15, parsedTurnLimit));
+        const targetPoints =
+          parsedTargetPoints === 201
+            ? 201
+            : parsedTargetPoints === 101
+            ? 101
+            : !Number.isNaN(parsedTargetPoints) && parsedTargetPoints >= 20 && parsedTargetPoints <= 500
+            ? parsedTargetPoints
+            : 101;
         const entryPoints = Number.isNaN(parsedEntryPoints)
           ? 80
           : Math.min(500, Math.max(40, parsedEntryPoints));
@@ -86,6 +96,7 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
             roomName: roomNameInput || `${user.username}'s Table`,
             maxPlayers: Math.min(6, Math.max(2, Number.isNaN(parsedMaxPlayers) ? 6 : parsedMaxPlayers)),
             roundCount: Math.max(1, Number.isNaN(parsedRoundCount) ? 1 : parsedRoundCount),
+            targetPoints,
             entryPoints,
             passwordHash,
             hostId: user.userId,
@@ -107,6 +118,7 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
             roomName: room.roomName,
             maxPlayers: room.maxPlayers,
             roundCount: room.roundCount,
+            targetPoints: room.targetPoints ?? targetPoints,
             entryPoints: room.entryPoints,
             turnTimeLimitSeconds,
             hasPassword: Boolean(room.passwordHash),
@@ -162,6 +174,7 @@ export function createRoomsRouter(roomManager?: RoomManager): Router {
           roomName: room.roomName,
           maxPlayers: room.maxPlayers,
           roundCount: room.roundCount,
+          targetPoints: room.targetPoints ?? 101,
           entryPoints: room.entryPoints,
           turnTimeLimitSeconds,
           hasPassword: Boolean(room.passwordHash),

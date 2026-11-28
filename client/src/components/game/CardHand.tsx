@@ -62,9 +62,24 @@ export const CardHand: React.FC<CardHandProps> = ({
   const isDiscardPhase = isMyTurn && gameState?.turnPhase === "DISCARD";
   const isDrawPhase = isMyTurn && gameState?.turnPhase === "DRAW";
 
-  const liveDeadwoodPoints = useMemo(() => {
-    if (handGroups.length === 0) return 0;
-    return ClientEvaluator.calculatePlayerScore(handGroups).points;
+  const { liveDeadwoodPoints, hasFirstLife, hasSecondLife } = useMemo(() => {
+    if (handGroups.length === 0) {
+      return { liveDeadwoodPoints: 0, hasFirstLife: false, hasSecondLife: false };
+    }
+    const evaluated = handGroups.map((g) => ClientEvaluator.evaluateMeld(g));
+    const pureCount = evaluated.filter(
+      (e) => e.isValid && e.type === "PURE_SEQUENCE"
+    ).length;
+    const seqCount = evaluated.filter(
+      (e) =>
+        e.isValid &&
+        (e.type === "PURE_SEQUENCE" || e.type === "IMPURE_SEQUENCE")
+    ).length;
+    return {
+      liveDeadwoodPoints: ClientEvaluator.calculatePlayerScore(handGroups).points,
+      hasFirstLife: pureCount >= 1,
+      hasSecondLife: pureCount >= 1 && seqCount >= 2,
+    };
   }, [handGroups]);
 
   // Compute cumulative card offset per meld group for staggered 13-card deal-in
@@ -213,6 +228,29 @@ export const CardHand: React.FC<CardHandProps> = ({
         </button>
 
         <div className="h-4 w-px bg-white/15 hidden sm:block mobile-landscape:block" />
+
+        {/* Live 1st Life (Pure Seq) & 2nd Life (2nd Seq) Chips */}
+        <div
+          className={`px-2 py-1 mobile-landscape:px-1.5 mobile-landscape:py-0.5 rounded-lg border text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-bold whitespace-nowrap transition ${
+            hasFirstLife
+              ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-200"
+              : "bg-slate-900/75 border-white/15 text-slate-400"
+          }`}
+          title="1st Life: At least one valid Pure Sequence (no jokers)"
+        >
+          1st Life {hasFirstLife ? "✓" : "✗"}
+        </div>
+
+        <div
+          className={`px-2 py-1 mobile-landscape:px-1.5 mobile-landscape:py-0.5 rounded-lg border text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-bold whitespace-nowrap transition ${
+            hasSecondLife
+              ? "bg-emerald-500/20 border-emerald-400/60 text-emerald-200"
+              : "bg-slate-900/75 border-white/15 text-slate-400"
+          }`}
+          title="2nd Life: Second valid Sequence (Pure or Impure)"
+        >
+          2nd Life {hasSecondLife ? "✓" : "✗"}
+        </div>
 
         {/* Live Deadwood Points Badge */}
         <div
