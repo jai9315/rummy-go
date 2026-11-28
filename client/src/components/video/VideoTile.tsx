@@ -1,7 +1,6 @@
 "use client";
 
 import { MicOff, VolumeX, WifiOff } from "lucide-react";
-import Image from "next/image";
 import React, { useEffect, useRef } from "react";
 import { useGameStore } from "../../store/useGameStore";
 import { PlayerPublicInfo, TableReaction } from "../../types";
@@ -11,7 +10,7 @@ export interface AttachableVideoTrack {
   detach(element?: HTMLMediaElement): HTMLMediaElement | HTMLMediaElement[];
 }
 
-export type VideoTileScale = "lg" | "md" | "sm" | "lobby";
+export type VideoTileScale = "lg" | "md" | "sm" | "lobby" | "dynamic";
 
 interface VideoTileProps {
   player: PlayerPublicInfo;
@@ -23,14 +22,26 @@ interface VideoTileProps {
   cameraLabel?: string;
   compact?: boolean;
   tileScale?: VideoTileScale;
+  seatPlacement?: "top" | "left" | "right" | "self" | "lobby";
+  bubblePlacement?: "top" | "bottom";
   hideCardCount?: boolean;
   turnProgress?: number; // 0..1 remaining fraction while player.isCurrentTurn is true
+  turnSecondsRemaining?: number;
   reactions?: TableReaction[];
   onSpotlight?: () => void;
   className?: string;
 }
 
-const TIMER_PERIMETER = 540;
+const TIMER_PATH_LENGTH = 100;
+
+export function getPlayerInitials(username: string): string {
+  const cleaned = (username || "P").trim();
+  const parts = cleaned.split(/[\s_-]+/).filter(Boolean);
+  if (parts.length >= 2) {
+    return `${parts[0][0]}${parts[1][0]}`.toUpperCase();
+  }
+  return cleaned.slice(0, 2).toUpperCase();
+}
 
 export const VideoTile: React.FC<VideoTileProps> = ({
   player,
@@ -40,10 +51,12 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   isLocallyMuted = false,
   isSpeaking = false,
   cameraLabel = "Camera Off",
-  compact = false,
-  tileScale,
+  tileScale = "dynamic",
+  seatPlacement,
+  bubblePlacement,
   hideCardCount = false,
   turnProgress = 1,
+  turnSecondsRemaining,
   reactions = [],
   onSpotlight,
   className = "",
@@ -64,40 +77,31 @@ export const VideoTile: React.FC<VideoTileProps> = ({
   const showTurnRing =
     player.isCurrentTurn && !player.hasDropped && !player.isEliminated;
   const clampedProgress = Math.max(0, Math.min(1, turnProgress));
-  const dashOffset = TIMER_PERIMETER * (1 - clampedProgress);
+  const dashOffset = TIMER_PATH_LENGTH * (1 - clampedProgress);
   const effectiveMuted = isMuted || isLocallyMuted;
   const showSpeaking = isSpeaking && !effectiveMuted;
+  const isOffline = player.connectionStatus === "DISCONNECTED";
+  const initials = getPlayerInitials(player.username);
 
-  // Adaptive tile scaling based on player count (2: large, 3-4: medium-large, 5-6: compact) or Lobby grid
-  const resolvedScale: VideoTileScale =
-    tileScale ?? (compact ? "sm" : "md");
+  // Determine dynamic clamp() class vs lobby full-width aspect class
+  const resolvedPlacement =
+    seatPlacement ?? (tileScale === "lobby" ? "lobby" : isSelf ? "self" : "top");
 
-  let sizeClass = "";
-  if (resolvedScale === "lobby") {
-    sizeClass = "w-full aspect-[16/10]";
-  } else if (isSelf) {
-    if (resolvedScale === "lg") {
-      sizeClass =
-        "w-[160px] sm:w-[205px] lg:w-[235px] aspect-[16/10] mobile-landscape:w-[110px] mobile-landscape:h-[66px] mobile-landscape:aspect-auto";
-    } else if (resolvedScale === "md") {
-      sizeClass =
-        "w-[144px] sm:w-[180px] lg:w-[204px] aspect-[16/10] mobile-landscape:w-[98px] mobile-landscape:h-[58px] mobile-landscape:aspect-auto";
-    } else {
-      sizeClass =
-        "w-[122px] sm:w-[148px] lg:w-[164px] aspect-[16/10] mobile-landscape:w-[88px] mobile-landscape:h-[52px] mobile-landscape:aspect-auto";
-    }
-  } else {
-    if (resolvedScale === "lg") {
-      sizeClass =
-        "w-[176px] sm:w-[230px] lg:w-[270px] aspect-[16/10] mobile-landscape:w-[126px] mobile-landscape:h-[74px] mobile-landscape:aspect-auto";
-    } else if (resolvedScale === "md") {
-      sizeClass =
-        "w-[138px] sm:w-[176px] lg:w-[205px] aspect-[16/10] mobile-landscape:w-[102px] mobile-landscape:h-[60px] mobile-landscape:aspect-auto";
-    } else {
-      sizeClass =
-        "w-[108px] sm:w-[134px] lg:w-[152px] aspect-[16/10] mobile-landscape:w-[84px] mobile-landscape:h-[48px] mobile-landscape:aspect-auto";
-    }
-  }
+  const sizeClass =
+    resolvedPlacement === "lobby" || tileScale === "lobby"
+      ? "w-full aspect-[16/10]"
+      : isSelf
+      ? "royal-video-self"
+      : `royal-video-opp ${
+          resolvedPlacement === "left"
+            ? "royal-video-left"
+            : resolvedPlacement === "right"
+            ? "royal-video-right"
+            : "royal-video-top"
+        }`;
+
+  const resolvedBubblePlacement =
+    bubblePlacement ?? (resolvedPlacement === "top" ? "bottom" : "top");
 
   return (
     <div
@@ -124,37 +128,45 @@ export const VideoTile: React.FC<VideoTileProps> = ({
         ${sizeClass}
         ${showTurnRing ? "is-active-turn z-20" : "z-10"}
         ${!isSelf && onSpotlight ? "cursor-pointer" : ""}
-        ${player.hasDropped || player.isEliminated ? "opacity-70" : ""}
+        ${player.hasDropped || player.isEliminated ? "opacity-75" : ""}
         ${className}
       `}
     >
-      {/* Floating Chat Speech Bubble above sender's tile (auto-fades ~4.5s) */}
+      {/* Floating 2-Line Chat Speech Bubble (above self/flank/lobby, below top-row so never clipped) */}
       {chatBubble && (
         <div
           key={chatBubble.id}
-          className="chat-bubble-pop pointer-events-none absolute bottom-full mb-1.5 left-1/2 z-50 w-max max-w-[170px] sm:max-w-[210px] px-2.5 py-1.5 rounded-xl bg-slate-950/95 border border-[#f6e09e]/75 text-[10px] sm:text-[11px] font-medium text-white shadow-[0_8px_22px_rgba(0,0,0,0.75)] backdrop-blur-md"
+          className={`chat-bubble-pop pointer-events-none absolute left-1/2 z-50 w-max max-w-[175px] sm:max-w-[220px] px-2.5 py-1.5 rounded-xl bg-slate-950/95 border border-[#f6e09e]/80 text-[10px] sm:text-[11px] font-medium text-white shadow-[0_8px_22px_rgba(0,0,0,0.75)] backdrop-blur-md ${
+            resolvedBubblePlacement === "bottom"
+              ? "top-full mt-1.5"
+              : "bottom-full mb-1.5"
+          }`}
         >
           <p className="line-clamp-2 leading-snug break-words text-center">
             {chatBubble.text}
           </p>
           <span
             aria-hidden="true"
-            className="absolute left-1/2 -bottom-1.5 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-slate-950/95 border-r border-b border-[#f6e09e]/75"
+            className={`absolute left-1/2 -translate-x-1/2 w-2.5 h-2.5 rotate-45 bg-slate-950/95 ${
+              resolvedBubblePlacement === "bottom"
+                ? "-top-1.5 border-l border-t border-[#f6e09e]/80"
+                : "-bottom-1.5 border-r border-b border-[#f6e09e]/80"
+            }`}
           />
         </div>
       )}
 
-      {/* Floating Emoji Reactions over sender's tile */}
+      {/* Animated Floating Emoji Reactions rising from sender's tile */}
       {reactions.map((reaction) => (
         <div
           key={reaction.id}
-          className="floating-emoji pointer-events-none absolute -top-2 left-1/2 z-40 text-2xl sm:text-3xl mobile-landscape:text-xl drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)]"
+          className="floating-emoji pointer-events-none absolute top-1/4 left-1/2 z-40 text-2xl sm:text-3xl mobile-landscape:text-xl drop-shadow-[0_4px_12px_rgba(0,0,0,0.85)]"
         >
           {reaction.emoji}
         </div>
       ))}
 
-      {/* Animated SVG Gold Turn-Timer Border */}
+      {/* Animated SVG Golden Turn-Timer Border synced live to remaining turn timer */}
       {showTurnRing && (
         <svg
           className="turn-timer-svg"
@@ -167,135 +179,136 @@ export const VideoTile: React.FC<VideoTileProps> = ({
             y="2"
             width="176"
             height="112"
-            rx="16"
-            ry="16"
+            rx="14"
+            ry="14"
+            pathLength={100}
+            vectorEffect="non-scaling-stroke"
             className="turn-timer-rect"
-            strokeDasharray={TIMER_PERIMETER}
+            strokeDasharray={100}
             strokeDashoffset={dashOffset}
           />
         </svg>
       )}
 
-      {/* Main Video Frame */}
+      {/* Main LiveKit Video Frame */}
       <div className="video-feed-inner relative w-full h-full bg-[#0b101b]">
-        {/* Real LiveKit Video Stream or Avatar Fallback */}
-        {videoTrack ? (
+        {/* Real LiveKit Video Stream (mirrored for local user) OR Sleek Gold-Ringed Initials Avatar Fallback */}
+        {videoTrack && !isOffline ? (
           <video
             ref={videoRef}
             autoPlay
             playsInline
             muted={isSelf}
-            className={`w-full h-full object-cover ${isSelf ? "-scale-x-100" : ""}`}
+            className={`w-full h-full object-cover ${isSelf ? "scale-x-[-1]" : ""}`}
           />
         ) : (
-          <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 pb-4 mobile-landscape:pb-2.5">
-            <div className="relative w-9 h-9 sm:w-11 sm:h-11 mobile-landscape:w-7 mobile-landscape:h-7 rounded-full overflow-hidden border border-amber-400/40 shadow-lg">
-              <Image
-                src={
-                  player.profileImage ||
-                  `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-                    player.username
-                  )}`
-                }
-                alt={player.username}
-                fill
-                className="object-cover"
-              />
+          <div className="w-full h-full flex flex-col items-center justify-center bg-[radial-gradient(circle_at_50%_40%,#1e293b_0%,#0f172a_58%,#060a14_100%)] pb-4 mobile-landscape:pb-2.5">
+            <div className="w-10 h-10 sm:w-12 sm:h-12 mobile-landscape:w-7 mobile-landscape:h-7 rounded-full bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 border-2 border-[#d4af37]/80 ring-2 ring-[#f6e09e]/20 shadow-[0_0_16px_rgba(212,175,55,0.28)] flex items-center justify-center">
+              <span className="font-serif-luxury text-xs sm:text-sm mobile-landscape:text-[10px] font-bold tracking-wider text-[#f6e09e]">
+                {initials}
+              </span>
             </div>
-            <span className="hidden sm:block mobile-landscape:hidden text-[9px] text-slate-400 font-medium leading-tight mt-0.5">
-              {cameraLabel}
+            <span className="hidden sm:block mobile-landscape:hidden text-[10px] text-slate-400 font-medium leading-tight mt-1">
+              {isOffline ? "Offline" : cameraLabel}
             </span>
           </div>
         )}
 
-        {/* Top Bar: Seat / Turn / Eliminated / Dropped + Speaking Equalizer / Mic Status */}
-        <div className="absolute top-1 inset-x-1.5 mobile-landscape:top-0.5 mobile-landscape:inset-x-1 flex items-center justify-between gap-1 z-10 pointer-events-none">
-          <div className="flex items-center gap-1 min-w-0">
-            {showTurnRing ? (
-              <span className="px-1.5 py-0.5 rounded-full bg-gradient-to-r from-amber-300 to-amber-500 text-slate-950 text-[8px] sm:text-[9px] mobile-landscape:text-[7px] font-black uppercase tracking-wider leading-none shadow">
-                {isSelf ? "Your Turn" : "Turn"}
+        {/* TOP-LEFT OVERLAY: Active Turn Countdown Pill (e.g. 18s with pulsing dot) + Cards-in-Hand Pill */}
+        <div className="absolute top-1.5 left-1.5 mobile-landscape:top-1 mobile-landscape:left-1 flex items-center gap-1 z-10 pointer-events-none">
+          {showTurnRing && (
+            <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-gradient-to-r from-[#f6e09e] to-[#d4af37] text-slate-950 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-black font-mono leading-none shadow-md">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-700 animate-ping" />
+              <span>
+                {typeof turnSecondsRemaining === "number"
+                  ? `${turnSecondsRemaining}s`
+                  : isSelf
+                  ? "TURN"
+                  : "LIVE"}
               </span>
-            ) : player.isEliminated ? (
-              <span className="px-1.5 py-0.5 rounded-full bg-rose-700/95 text-white text-[8px] mobile-landscape:text-[7px] font-black uppercase tracking-wider leading-none">
-                Eliminated
-              </span>
-            ) : player.hasDropped ? (
-              <span className="px-1.5 py-0.5 rounded-full bg-red-600/90 text-white text-[8px] mobile-landscape:text-[7px] font-bold uppercase leading-none">
-                Dropped
-              </span>
-            ) : (
-              <span className="px-1.5 py-0.5 rounded-full bg-black/65 text-amber-200/90 border border-amber-400/25 text-[8px] mobile-landscape:text-[7px] font-bold leading-none">
-                #{player.seatNumber}
-              </span>
-            )}
-          </div>
+            </span>
+          )}
 
-          <div className="flex items-center gap-1 shrink-0">
-            {player.connectionStatus === "DISCONNECTED" && (
-              <span
-                className="flex items-center gap-0.5 px-1 py-0.5 rounded-full bg-red-600/90 text-white text-[7px] font-bold"
-                title="Offline"
-              >
-                <WifiOff className="w-2.5 h-2.5" />
-                {typeof player.offlineTurnsMissed === "number" &&
-                  player.offlineTurnsMissed > 0 && (
-                    <span>{Math.min(2, player.offlineTurnsMissed)}/2</span>
-                  )}
-              </span>
-            )}
-
-            {showSpeaking ? (
-              <div
-                className="flex items-end gap-[2px] h-3.5 px-1.5 py-0.5 rounded-full bg-emerald-500/85"
-                title="Speaking"
-              >
-                <span className="w-[2px] h-2 bg-slate-950 rounded-full eq-bar-1" />
-                <span className="w-[2px] h-2.5 bg-slate-950 rounded-full eq-bar-2" />
-                <span className="w-[2px] h-2 bg-slate-950 rounded-full eq-bar-3" />
-              </div>
-            ) : isLocallyMuted ? (
-              <span
-                className="p-0.5 rounded-full bg-amber-600/90 text-white"
-                title="Muted by you"
-              >
-                <VolumeX className="w-2.5 h-2.5 mobile-landscape:w-2 mobile-landscape:h-2" />
-              </span>
-            ) : isMuted ? (
-              <span
-                className="p-0.5 rounded-full bg-red-600/85 text-white"
-                title="Mic muted"
-              >
-                <MicOff className="w-2.5 h-2.5 mobile-landscape:w-2 mobile-landscape:h-2" />
-              </span>
-            ) : (
-              <span
-                className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_6px_#34d399]"
-                title="Mic live"
-              />
-            )}
-          </div>
+          {!hideCardCount && (
+            <span
+              className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-slate-950/80 border border-white/15 text-amber-200 text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold leading-none backdrop-blur-sm"
+              title={`${player.cardCount} cards in hand`}
+            >
+              <span className="text-[8px] sm:text-[9px] opacity-85">🃏</span>
+              <span>{player.cardCount}</span>
+            </span>
+          )}
         </div>
 
-        {/* Bottom Glass Overlay: Name, Points, Card Count */}
-        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-1.5 pb-1 pt-3 mobile-landscape:px-1 mobile-landscape:pb-0.5 mobile-landscape:pt-2 z-10">
-          <div className="flex items-center justify-between gap-1 leading-none">
-            <span className="truncate text-[10px] sm:text-[11px] mobile-landscape:text-[8px] font-bold text-white drop-shadow">
-              {player.username}
-              {isSelf ? " (You)" : ""}
+        {/* TOP-RIGHT OVERLAY: Animated 3-Bar Emerald Speaking Equalizer + Red Muted-Mic Badge */}
+        <div className="absolute top-1.5 right-1.5 mobile-landscape:top-1 mobile-landscape:right-1 flex items-center gap-1 z-10 pointer-events-none">
+          {showSpeaking ? (
+            <div
+              className="flex items-end gap-[2px] h-4 px-1.5 py-0.5 rounded-full bg-emerald-500/90 shadow-[0_0_10px_rgba(16,185,129,0.65)]"
+              title="Speaking"
+            >
+              <span className="w-[2px] h-2 bg-slate-950 rounded-full eq-bar-1" />
+              <span className="w-[2px] h-2.5 bg-slate-950 rounded-full eq-bar-2" />
+              <span className="w-[2px] h-2 bg-slate-950 rounded-full eq-bar-3" />
+            </div>
+          ) : isLocallyMuted ? (
+            <span
+              className="p-1 rounded-full bg-rose-600/95 border border-rose-300/40 text-white shadow"
+              title="Muted by you"
+            >
+              <VolumeX className="w-2.5 h-2.5 sm:w-3 sm:h-3 mobile-landscape:w-2 mobile-landscape:h-2" />
             </span>
+          ) : isMuted ? (
+            <span
+              className="p-1 rounded-full bg-rose-600/90 border border-rose-300/35 text-white shadow"
+              title="Mic muted"
+            >
+              <MicOff className="w-2.5 h-2.5 sm:w-3 sm:h-3 mobile-landscape:w-2 mobile-landscape:h-2" />
+            </span>
+          ) : (
+            <span
+              className="w-2 h-2 rounded-full bg-emerald-400 shadow-[0_0_8px_#34d399]"
+              title="Mic live"
+            />
+          )}
+        </div>
+
+        {/* BOTTOM GRADIENT BAR: Truncated Name + Gold Points Badge + ELIMINATED / OFFLINE / DROPPED Status Pills */}
+        <div className="absolute bottom-0 inset-x-0 bg-gradient-to-t from-black/95 via-black/75 to-transparent px-2 pb-1.5 pt-4 mobile-landscape:px-1.5 mobile-landscape:pb-1 mobile-landscape:pt-2.5 z-10">
+          <div className="flex items-center justify-between gap-1.5 leading-none">
+            <div className="flex items-center gap-1 min-w-0">
+              <span className="truncate text-[10px] sm:text-xs mobile-landscape:text-[9px] font-bold text-white drop-shadow">
+                {player.username}
+                {isSelf ? " (You)" : ""}
+              </span>
+              {player.isEliminated && (
+                <span className="shrink-0 px-1 py-0.5 rounded bg-rose-600/95 text-white text-[7px] sm:text-[8px] font-black uppercase tracking-wider leading-none">
+                  ELIMINATED
+                </span>
+              )}
+              {!player.isEliminated && isOffline && (
+                <span className="shrink-0 inline-flex items-center gap-0.5 px-1 py-0.5 rounded bg-rose-700/90 text-white text-[7px] sm:text-[8px] font-black uppercase tracking-wider leading-none">
+                  <WifiOff className="w-2 h-2" />
+                  <span>
+                    OFFLINE
+                    {typeof player.offlineTurnsMissed === "number" &&
+                    player.offlineTurnsMissed > 0
+                      ? ` ${Math.min(2, player.offlineTurnsMissed)}/2`
+                      : ""}
+                  </span>
+                </span>
+              )}
+              {!player.isEliminated && !isOffline && player.hasDropped && (
+                <span className="shrink-0 px-1 py-0.5 rounded bg-amber-700/90 text-amber-100 text-[7px] sm:text-[8px] font-black uppercase leading-none">
+                  DROPPED
+                </span>
+              )}
+            </div>
 
             {!hideCardCount && (
-              <div className="flex items-center gap-1 shrink-0">
-                <span className="hidden sm:inline-block mobile-landscape:hidden px-1 py-0.5 rounded bg-slate-900/90 border border-white/15 text-[8px] font-mono font-semibold text-slate-300 leading-none">
-                  {player.score}p
-                </span>
-                <span
-                  className="px-1 py-0.5 rounded bg-amber-500/20 border border-amber-400/45 text-amber-200 text-[9px] mobile-landscape:text-[8px] font-mono font-bold leading-none"
-                  title={`${player.cardCount} cards in hand`}
-                >
-                  🃏{player.cardCount}
-                </span>
-              </div>
+              <span className="shrink-0 px-1.5 py-0.5 rounded-md bg-amber-500/20 border border-[#d4af37]/50 text-[#f6e09e] text-[9px] sm:text-[10px] mobile-landscape:text-[8px] font-mono font-bold leading-none">
+                {player.score} pts
+              </span>
             )}
           </div>
         </div>

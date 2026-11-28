@@ -116,11 +116,139 @@ body {
 
 /* Video Tile Styling & Active Gold Turn Timer */
 .video-tile {
-  transition: transform 0.25s cubic-bezier(0.22, 1, 0.36, 1), box-shadow 0.25s ease;
+  transition:
+    width 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+    height 0.38s cubic-bezier(0.22, 1, 0.36, 1),
+    transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.25s ease;
 }
 
 .video-tile:hover {
   transform: translateY(-2px);
+}
+
+/* =========================================================================
+   Royal 13 Dynamic 2P–6P Seating & Non-Fixed clamp() Video Sizing
+   ========================================================================= */
+
+/* 2 Players (1 Opponent: large centered top tile + larger local tile) */
+[data-players="2"] .royal-video-opp {
+  width: clamp(240px, 44vw, 620px);
+  height: clamp(135px, 25vh, 250px);
+}
+[data-players="2"] .royal-video-self {
+  width: clamp(160px, 19vw, 270px);
+  height: clamp(98px, 14.5vh, 160px);
+}
+
+/* 3 Players (2 Opponents: 2 wide side-by-side top tiles) */
+[data-players="3"] .royal-video-opp {
+  width: clamp(195px, 32vw, 460px);
+  height: clamp(120px, 22vh, 215px);
+}
+[data-players="3"] .royal-video-self {
+  width: clamp(150px, 17vw, 240px);
+  height: clamp(92px, 13.5vh, 146px);
+}
+
+/* 4 Players (3 Opponents: 3 balanced top tiles) */
+[data-players="4"] .royal-video-opp {
+  width: clamp(155px, 24vw, 350px);
+  height: clamp(108px, 19vh, 190px);
+}
+[data-players="4"] .royal-video-self {
+  width: clamp(138px, 15.5vw, 218px);
+  height: clamp(86px, 12.5vh, 134px);
+}
+
+/* 5 Players (4 Opponents: 2 top + 2 flanking left/right) */
+[data-players="5"] .royal-video-opp {
+  width: clamp(132px, 18.5vw, 265px);
+  height: clamp(94px, 16.5vh, 162px);
+}
+[data-players="5"] .royal-video-self {
+  width: clamp(128px, 14vw, 196px);
+  height: clamp(82px, 12vh, 124px);
+}
+
+/* 6 Players (5 Opponents: 3 top + 2 flanking left/right) */
+[data-players="6"] .royal-video-opp {
+  width: clamp(114px, 15.5vw, 220px);
+  height: clamp(84px, 14.5vh, 140px);
+}
+[data-players="6"] .royal-video-self {
+  width: clamp(118px, 13vw, 182px);
+  height: clamp(78px, 11.5vh, 116px);
+}
+
+/* Compact Video Mode — scales tiles cleanly to 0.86 for extra breathing room */
+[data-compact-video="true"] .royal-video-opp,
+[data-compact-video="true"] .royal-video-self {
+  transform: scale(0.86);
+}
+[data-compact-video="true"] .royal-video-opp:hover,
+[data-compact-video="true"] .royal-video-self:hover {
+  transform: scale(0.86) translateY(-2px);
+}
+[data-compact-video="true"] .royal-video-top {
+  transform-origin: top center;
+}
+[data-compact-video="true"] .royal-video-left {
+  transform-origin: center left;
+}
+[data-compact-video="true"] .royal-video-right {
+  transform-origin: center right;
+}
+[data-compact-video="true"] .royal-video-self {
+  transform-origin: bottom left;
+}
+
+/* Tighter Mobile 16:9 Landscape clamp() Bounds (844x390, 667x375) — strictly zero-scroll */
+@media (max-height: 500px) and (orientation: landscape) {
+  [data-players="2"] .royal-video-opp {
+    width: clamp(160px, 34vw, 280px);
+    height: clamp(64px, 19vh, 84px);
+  }
+  [data-players="2"] .royal-video-self {
+    width: clamp(94px, 14vw, 126px);
+    height: clamp(56px, 15.5vh, 72px);
+  }
+
+  [data-players="3"] .royal-video-opp {
+    width: clamp(138px, 28vw, 225px);
+    height: clamp(60px, 17.5vh, 78px);
+  }
+  [data-players="3"] .royal-video-self {
+    width: clamp(88px, 13.5vw, 118px);
+    height: clamp(54px, 15vh, 68px);
+  }
+
+  [data-players="4"] .royal-video-opp {
+    width: clamp(118px, 22vw, 185px);
+    height: clamp(56px, 16.5vh, 72px);
+  }
+  [data-players="4"] .royal-video-self {
+    width: clamp(84px, 12.5vw, 112px);
+    height: clamp(52px, 14.5vh, 66px);
+  }
+
+  [data-players="5"] .royal-video-opp {
+    width: clamp(96px, 15vw, 142px);
+    height: clamp(52px, 15vh, 66px);
+  }
+  [data-players="5"] .royal-video-self {
+    width: clamp(80px, 11.5vw, 106px);
+    height: clamp(50px, 14vh, 62px);
+  }
+
+  [data-players="6"] .royal-video-opp {
+    width: clamp(86px, 13.5vw, 128px);
+    height: clamp(48px, 14vh, 62px);
+  }
+  [data-players="6"] .royal-video-self {
+    width: clamp(76px, 11vw, 100px);
+    height: clamp(48px, 13.5vh, 60px);
+  }
 }
 
 .video-feed-inner {

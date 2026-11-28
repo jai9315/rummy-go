@@ -25,7 +25,6 @@ import {
   VolumeX,
   X,
 } from "lucide-react";
-import Image from "next/image";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Card } from "@/components/game/Card";
 import { CardHand } from "@/components/game/CardHand";
@@ -41,8 +40,8 @@ import { VideoErrorBoundary } from "@/components/video/VideoErrorBoundary";
 import { useLiveKitMedia } from "@/components/video/VideoOverlay";
 import {
   AttachableVideoTrack,
+  getPlayerInitials,
   VideoTile,
-  VideoTileScale,
 } from "@/components/video/VideoTile";
 import { ClientEvaluator } from "@/lib/clientEvaluator";
 import { soundEffects } from "@/lib/soundEffects";
@@ -116,21 +115,6 @@ function formatMoveFeedMessage(
   }
 }
 
-type SeatSlot =
-  | "MID_LEFT"
-  | "TOP_LEFT"
-  | "TOP_CENTER"
-  | "TOP_RIGHT"
-  | "MID_RIGHT";
-
-const SEAT_POSITION_CLASS: Record<SeatSlot, string> = {
-  MID_LEFT: "left-1 sm:left-3 lg:left-5 top-[54%] -translate-y-1/2",
-  TOP_LEFT: "left-[7%] sm:left-[13%] lg:left-[16%] top-0.5 sm:top-1",
-  TOP_CENTER: "left-1/2 -translate-x-1/2 top-0",
-  TOP_RIGHT: "right-[7%] sm:right-[13%] lg:right-[16%] top-0.5 sm:top-1",
-  MID_RIGHT: "right-1 sm:right-3 lg:right-5 top-[54%] -translate-y-1/2",
-};
-
 const QUICK_REACTIONS = ["🔥", "😂", "👏", "😱"] as const;
 
 const FELT_THEMES: Array<{
@@ -159,23 +143,27 @@ const FELT_THEMES: Array<{
   },
 ];
 
-function mapOpponentsToSlots(opponents: PlayerPublicInfo[]): Array<{
-  player: PlayerPublicInfo;
-  slot: SeatSlot;
-}> {
-  const count = Math.min(opponents.length, 5);
-  const slotsByCount: Record<number, SeatSlot[]> = {
-    1: ["TOP_CENTER"],
-    2: ["TOP_LEFT", "TOP_RIGHT"],
-    3: ["MID_LEFT", "TOP_CENTER", "MID_RIGHT"],
-    4: ["MID_LEFT", "TOP_LEFT", "TOP_RIGHT", "MID_RIGHT"],
-    5: ["MID_LEFT", "TOP_LEFT", "TOP_CENTER", "TOP_RIGHT", "MID_RIGHT"],
-  };
-  const slots = slotsByCount[count] ?? [];
-  return opponents.slice(0, 5).map((player, idx) => ({
-    player,
-    slot: slots[idx],
-  }));
+/**
+ * Arranges 1–5 opponents clockwise into the Royal 13 Dynamic Video Ring:
+ * - 2P (1 opp): 1 centered top tile
+ * - 3P (2 opps): 2 side-by-side top tiles
+ * - 4P (3 opps): 3 balanced top tiles
+ * - 5P (4 opps): 2 top tiles + 2 flanking left/right tiles
+ * - 6P (5 opps): 3 top tiles + 2 flanking left/right tiles
+ */
+function arrangeOpponentsForRing(opponents: PlayerPublicInfo[]): {
+  top: PlayerPublicInfo[];
+  left: PlayerPublicInfo | null;
+  right: PlayerPublicInfo | null;
+} {
+  const list = opponents.slice(0, 5);
+  if (list.length <= 3) {
+    return { top: list, left: null, right: null };
+  }
+  if (list.length === 4) {
+    return { left: list[0], top: [list[1], list[2]], right: list[3] };
+  }
+  return { left: list[0], top: [list[1], list[2], list[3]], right: list[4] };
 }
 
 function getMeldBadgeLabel(type: MeldType): {
@@ -236,22 +224,16 @@ const SpotlightVideoFeed: React.FC<{
   }
 
   return (
-    <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-br from-slate-800 to-slate-950 gap-2">
-      <div className="relative w-16 h-16 rounded-full overflow-hidden border-2 border-amber-400/50 shadow-xl">
-        <Image
-          src={
-            player.profileImage ||
-            `https://api.dicebear.com/7.x/bottts/svg?seed=${encodeURIComponent(
-              player.username
-            )}`
-          }
-          alt={player.username}
-          fill
-          className="object-cover"
-        />
+    <div className="w-full h-full flex flex-col items-center justify-center bg-[radial-gradient(circle_at_50%_40%,#1e293b_0%,#0f172a_58%,#060a14_100%)] gap-2.5">
+      <div className="w-16 h-16 rounded-full bg-gradient-to-br from-slate-800 via-slate-900 to-slate-950 border-2 border-[#d4af37]/85 ring-4 ring-[#f6e09e]/20 shadow-[0_0_24px_rgba(212,175,55,0.3)] flex items-center justify-center">
+        <span className="font-serif-luxury text-xl font-bold tracking-wider text-[#f6e09e]">
+          {getPlayerInitials(player.username)}
+        </span>
       </div>
       <span className="text-xs text-slate-400 font-medium">
-        Camera Off / Audio Mode
+        {player.connectionStatus === "DISCONNECTED"
+          ? "Player Offline"
+          : "Camera Off"}
       </span>
     </div>
   );
@@ -613,9 +595,12 @@ const TableStage: React.FC<TableStageProps> = ({
   }, [handleDropOnZone, handleEndDrag, handleHoverZone]);
 
   // Sort players by seatNumber and rotate so opponents sit clockwise after local player
-  const { selfPlayer, seatedOpponents } = useMemo(() => {
+  const { selfPlayer, ringOpponents } = useMemo(() => {
     if (!gameState) {
-      return { selfPlayer: undefined, seatedOpponents: [] };
+      return {
+        selfPlayer: undefined,
+        ringOpponents: { top: [] as PlayerPublicInfo[], left: null as PlayerPublicInfo | null, right: null as PlayerPublicInfo | null },
+      };
     }
     const sorted = [...gameState.players].sort(
       (a, b) => a.seatNumber - b.seatNumber
@@ -629,7 +614,7 @@ const TableStage: React.FC<TableStageProps> = ({
 
     return {
       selfPlayer: self,
-      seatedOpponents: mapOpponentsToSlots(rotatedOpponents),
+      ringOpponents: arrangeOpponentsForRing(rotatedOpponents),
     };
   }, [gameState, currentUserId]);
 
@@ -649,15 +634,36 @@ const TableStage: React.FC<TableStageProps> = ({
     ? getPlayerMedia(selfPlayer.id, true)
     : undefined;
 
-  // Part 2 Item 3: Adaptive Video Tile Sizing by total player count (2: lg, 3-4: md, 5-6: sm)
-  const totalPlayersCount = gameState?.players.length ?? 2;
-  const adaptiveTileScale: VideoTileScale = isCompactVideo
-    ? "sm"
-    : totalPlayersCount <= 2
-    ? "lg"
-    : totalPlayersCount <= 4
-    ? "md"
-    : "sm";
+  const renderOpponentTile = (
+    player: PlayerPublicInfo,
+    placement: "top" | "left" | "right"
+  ) => {
+    const media = getPlayerMedia(player.id, false);
+    const isLocallyMuted = mutedRemotePlayerIds.includes(player.id);
+    const playerReactions = activeReactions.filter(
+      (r) => r.playerId === player.id
+    );
+    return (
+      <VideoTile
+        key={player.id}
+        player={player}
+        isSelf={false}
+        seatPlacement={placement}
+        bubblePlacement={placement === "top" ? "bottom" : "top"}
+        videoTrack={media.videoTrack}
+        isMuted={media.isMuted}
+        isLocallyMuted={isLocallyMuted}
+        isSpeaking={media.isSpeaking}
+        cameraLabel={media.cameraLabel}
+        turnProgress={player.isCurrentTurn ? turnProgress : 1}
+        turnSecondsRemaining={
+          player.isCurrentTurn ? displayedSeconds : undefined
+        }
+        reactions={playerReactions}
+        onSpotlight={() => setSpotlightPlayerId(player.id)}
+      />
+    );
+  };
 
   return (
     <>
@@ -704,196 +710,191 @@ const TableStage: React.FC<TableStageProps> = ({
         </div>
       )}
 
-      {/* BAND 2: ROYAL 13 OVAL TABLE ARENA + PERIMETER OPPONENT VIDEO SEATS */}
-      <main className="flex-1 min-h-0 relative w-full max-w-[1480px] mx-auto flex items-center justify-center px-2 sm:px-5 lg:px-8 py-1.5 sm:py-2 mobile-landscape:px-1.5 mobile-landscape:py-0.5 overflow-hidden">
-        {/* Opponent Video Tiles Positioned Dynamically Around the Oval Table */}
-        {seatedOpponents.map(({ player, slot }) => {
-          const media = getPlayerMedia(player.id, false);
-          const isLocallyMuted = mutedRemotePlayerIds.includes(player.id);
-          const playerReactions = activeReactions.filter(
-            (r) => r.playerId === player.id
-          );
-          return (
-            <div
-              key={player.id}
-              className={`absolute ${SEAT_POSITION_CLASS[slot]} z-20`}
-            >
-              <VideoTile
-                player={player}
-                isSelf={false}
-                videoTrack={media.videoTrack}
-                isMuted={media.isMuted}
-                isLocallyMuted={isLocallyMuted}
-                isSpeaking={media.isSpeaking}
-                cameraLabel={media.cameraLabel}
-                compact={isCompactVideo}
-                tileScale={adaptiveTileScale}
-                turnProgress={player.isCurrentTurn ? turnProgress : 1}
-                reactions={playerReactions}
-                onSpotlight={() => setSpotlightPlayerId(player.id)}
-              />
+      {/* BAND 2: ROYAL 13 DYNAMIC 2P–6P VIDEO RING + OVAL FELT TABLE */}
+      <main className="flex-1 min-h-0 relative w-full max-w-[1520px] mx-auto flex flex-col items-center justify-between gap-1.5 sm:gap-2.5 mobile-landscape:gap-1 px-2 sm:px-4 lg:px-6 py-1.5 sm:py-2 mobile-landscape:px-2 mobile-landscape:py-1 overflow-hidden">
+        {/* TOP OPPONENT ROW (1 tile for 2P; 2 for 3P/5P; 3 for 4P/6P) */}
+        {ringOpponents.top.length > 0 && (
+          <div className="shrink-0 w-full flex items-center justify-center gap-2 sm:gap-3 lg:gap-4 mobile-landscape:gap-2 z-20">
+            {ringOpponents.top.map((opp) => renderOpponentTile(opp, "top"))}
+          </div>
+        )}
+
+        {/* MIDDLE ARENA ROW: [Left Flank Tile (5P/6P)] + [Oval Felt Table] + [Right Flank Tile (5P/6P)] */}
+        <div className="flex-1 min-h-0 w-full flex items-center justify-center gap-2 sm:gap-3 lg:gap-4 mobile-landscape:gap-2">
+          {ringOpponents.left && (
+            <div className="shrink-0 z-20">
+              {renderOpponentTile(ringOpponents.left, "left")}
             </div>
-          );
-        })}
+          )}
 
-        {/* Luxury 3-Layer Oval Rummy Table (Rebalanced proportions for larger video feeds & minimal dark margins) */}
-        <div className="rummy-table-outer w-[88%] sm:w-[84%] lg:w-[80%] h-[82%] sm:h-[84%] mobile-landscape:w-[82%] mobile-landscape:h-[90%] rounded-[84px] sm:rounded-[150px] mobile-landscape:rounded-[64px] p-2 sm:p-2.5 mobile-landscape:p-1.5 flex items-center justify-center">
-          <div className="rummy-table-rail w-full h-full rounded-[76px] sm:rounded-[140px] mobile-landscape:rounded-[58px] p-1.5 sm:p-2.5 mobile-landscape:p-1 flex items-center justify-center">
-            <div className="rummy-felt w-full h-full rounded-[68px] sm:rounded-[130px] mobile-landscape:rounded-[52px] flex flex-col items-center justify-center overflow-hidden px-4 sm:px-8 pt-5 sm:pt-7 pb-2 mobile-landscape:pt-3 mobile-landscape:pb-1 relative">
-              {/* Gold Inner Decorative Ring */}
-              <div className="rummy-felt-inner-ring" />
+          {/* Luxury 3-Layer Oval Rummy Table (Brass Outer -> Leather Rail -> Radial Felt) */}
+          <div className="rummy-table-outer flex-1 min-w-0 max-w-[940px] h-full max-h-[420px] mobile-landscape:max-h-full rounded-[72px] sm:rounded-[140px] mobile-landscape:rounded-[56px] p-1.5 sm:p-2.5 mobile-landscape:p-1 flex items-center justify-center">
+            <div className="rummy-table-rail w-full h-full rounded-[64px] sm:rounded-[130px] mobile-landscape:rounded-[50px] p-1.5 sm:p-2 mobile-landscape:p-1 flex items-center justify-center">
+              <div className="rummy-felt w-full h-full rounded-[58px] sm:rounded-[120px] mobile-landscape:rounded-[44px] flex flex-col items-center justify-center overflow-hidden px-3 sm:px-8 py-2 mobile-landscape:py-1 relative">
+                {/* Gold Inner Decorative Ring */}
+                <div className="rummy-felt-inner-ring" />
 
-              {/* Faint Luxury Serif Watermark */}
-              <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center opacity-[0.07] select-none">
-                <span className="font-serif-luxury text-3xl sm:text-5xl lg:text-6xl mobile-landscape:text-2xl font-bold tracking-[0.26em] text-[#f6e09e]">
-                  ROYAL 13
-                </span>
-                <span className="text-[9px] sm:text-xs tracking-[0.38em] uppercase text-[#f6e09e] mt-1">
-                  Indian Points Rummy
-                </span>
-              </div>
+                {/* Faint Luxury Serif Watermark */}
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center opacity-[0.07] select-none">
+                  <span className="font-serif-luxury text-3xl sm:text-5xl lg:text-6xl mobile-landscape:text-2xl font-bold tracking-[0.26em] text-[#f6e09e]">
+                    ROYAL 13
+                  </span>
+                  <span className="text-[9px] sm:text-xs tracking-[0.38em] uppercase text-[#f6e09e] mt-1">
+                    Indian Points Rummy
+                  </span>
+                </div>
 
-              {/* Center Interactive Content: SHOW Meld Submission OR DeckPiles / TOSS Banner */}
-              {isShowPhase && gameState ? (
-                <div className="w-full max-w-2xl max-h-full overflow-y-auto glass-panel border border-amber-400/50 rounded-2xl p-3 sm:p-4 mobile-landscape:p-2 shadow-2xl space-y-2.5 z-20">
-                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
-                    <div className="flex items-center gap-2">
-                      <Award className="w-4 h-4 text-[#f6e09e] shrink-0" />
-                      <div>
-                        <h3 className="text-xs sm:text-sm font-black text-[#f6e09e] leading-tight">
-                          Show Phase — {winnerPlayer?.username || "Winner"}{" "}
-                          Declared!
-                        </h3>
-                        <p className="text-[10px] sm:text-[11px] text-slate-300">
-                          Arrange your groups below and submit melds to minimize
-                          deadwood.
-                        </p>
+                {/* Center Interactive Content: SHOW Meld Submission OR DeckPiles / TOSS Banner */}
+                {isShowPhase && gameState ? (
+                  <div className="w-full max-w-2xl max-h-full overflow-y-auto glass-panel border border-amber-400/50 rounded-2xl p-3 sm:p-4 mobile-landscape:p-2 shadow-2xl space-y-2.5 z-20">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-2">
+                      <div className="flex items-center gap-2">
+                        <Award className="w-4 h-4 text-[#f6e09e] shrink-0" />
+                        <div>
+                          <h3 className="text-xs sm:text-sm font-black text-[#f6e09e] leading-tight">
+                            Show Phase — {winnerPlayer?.username || "Winner"}{" "}
+                            Declared!
+                          </h3>
+                          <p className="text-[10px] sm:text-[11px] text-slate-300">
+                            Arrange your groups below and submit melds to minimize
+                            deadwood.
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-200 text-xs font-mono font-bold">
+                        <Clock className="w-3.5 h-3.5" />
+                        <span>{displayedSeconds}s</span>
                       </div>
                     </div>
-                    <div className="flex items-center gap-1 px-2.5 py-1 rounded-full bg-amber-500/20 border border-amber-400/50 text-amber-200 text-xs font-mono font-bold">
-                      <Clock className="w-3.5 h-3.5" />
-                      <span>{displayedSeconds}s</span>
-                    </div>
-                  </div>
 
-                  {gameState.winnerMelds && gameState.winnerMelds.length > 0 && (
-                    <div className="space-y-1.5">
-                      <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
-                        {winnerPlayer?.username || "Winner"}&apos;s Winning
-                        Melds
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        {gameState.winnerMelds.map((meld, idx) => {
-                          const evalRes = ClientEvaluator.evaluateMeld(meld);
-                          const badge = getMeldBadgeLabel(evalRes.type);
-                          return (
-                            <div
-                              key={idx}
-                              className="flex flex-col items-center gap-1 bg-slate-950/75 border border-white/10 rounded-xl p-1.5"
-                            >
-                              <span
-                                className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${badge.className}`}
+                    {gameState.winnerMelds && gameState.winnerMelds.length > 0 && (
+                      <div className="space-y-1.5">
+                        <div className="text-[10px] font-bold uppercase tracking-wider text-emerald-300">
+                          {winnerPlayer?.username || "Winner"}&apos;s Winning
+                          Melds
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          {gameState.winnerMelds.map((meld, idx) => {
+                            const evalRes = ClientEvaluator.evaluateMeld(meld);
+                            const badge = getMeldBadgeLabel(evalRes.type);
+                            return (
+                              <div
+                                key={idx}
+                                className="flex flex-col items-center gap-1 bg-slate-950/75 border border-white/10 rounded-xl p-1.5"
                               >
-                                {badge.label}
-                              </span>
-                              <div className="flex items-center -space-x-4">
-                                {meld.map((c) => (
-                                  <Card key={c.id} card={c} size="sm" disabled />
-                                ))}
+                                <span
+                                  className={`text-[9px] font-bold px-2 py-0.5 rounded-full border ${badge.className}`}
+                                >
+                                  {badge.label}
+                                </span>
+                                <div className="flex items-center -space-x-4">
+                                  {meld.map((c) => (
+                                    <Card key={c.id} card={c} size="sm" disabled />
+                                  ))}
+                                </div>
                               </div>
-                            </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/10">
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                        {activeShowOpponents.map((opp) => {
+                          const done = submittedIds.has(opp.id);
+                          return (
+                            <span
+                              key={opp.id}
+                              className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-semibold ${
+                                done
+                                  ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
+                                  : "bg-slate-900 border-white/15 text-slate-300"
+                              }`}
+                            >
+                              {done && <CheckCircle2 className="w-3 h-3" />}
+                              <span>{opp.username}</span>
+                              <span className="text-[9px] opacity-75">
+                                {done ? "Submitted" : "Arranging..."}
+                              </span>
+                            </span>
                           );
                         })}
                       </div>
-                    </div>
-                  )}
 
-                  <div className="flex flex-wrap items-center justify-between gap-2 pt-1.5 border-t border-white/10">
-                    <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                      {activeShowOpponents.map((opp) => {
-                        const done = submittedIds.has(opp.id);
-                        return (
-                          <span
-                            key={opp.id}
-                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full border font-semibold ${
-                              done
-                                ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200"
-                                : "bg-slate-900 border-white/15 text-slate-300"
-                            }`}
-                          >
-                            {done && <CheckCircle2 className="w-3 h-3" />}
-                            <span>{opp.username}</span>
-                            <span className="text-[9px] opacity-75">
-                              {done ? "Submitted" : "Arranging..."}
-                            </span>
+                      {canSubmitOpponentMelds ? (
+                        <button
+                          type="button"
+                          onClick={() => onSubmitMelds(handGroups)}
+                          className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#f6e09e] to-[#d4af37] hover:brightness-110 text-slate-950 font-black text-xs shadow-lg transition"
+                        >
+                          <Send className="w-3.5 h-3.5" />
+                          <span>
+                            Submit My Melds
+                            {liveDeadwoodPreview !== null
+                              ? ` (${liveDeadwoodPreview} pts)`
+                              : ""}
                           </span>
-                        );
-                      })}
-                    </div>
-
-                    {canSubmitOpponentMelds ? (
-                      <button
-                        type="button"
-                        onClick={() => onSubmitMelds(handGroups)}
-                        className="flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#f6e09e] to-[#d4af37] hover:brightness-110 text-slate-950 font-black text-xs shadow-lg transition"
-                      >
-                        <Send className="w-3.5 h-3.5" />
-                        <span>
-                          Submit My Melds
-                          {liveDeadwoodPreview !== null
-                            ? ` (${liveDeadwoodPreview} pts)`
-                            : ""}
+                        </button>
+                      ) : currentUserId === gameState.winnerId ? (
+                        <span className="text-[11px] font-semibold text-emerald-300">
+                          Waiting for opponents to submit...
                         </span>
-                      </button>
-                    ) : currentUserId === gameState.winnerId ? (
-                      <span className="text-[11px] font-semibold text-emerald-300">
-                        Waiting for opponents to submit...
-                      </span>
-                    ) : submittedIds.has(currentUserId) ? (
-                      <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300">
-                        <CheckCircle2 className="w-3.5 h-3.5" />
-                        Melds submitted — waiting on table...
-                      </span>
-                    ) : null}
+                      ) : submittedIds.has(currentUserId) ? (
+                        <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-300">
+                          <CheckCircle2 className="w-3.5 h-3.5" />
+                          Melds submitted — waiting on table...
+                        </span>
+                      ) : null}
+                    </div>
                   </div>
-                </div>
-              ) : (
-                <DeckPiles
-                  isShuffling={isShuffling}
-                  shuffleLabel={shuffleLabel}
-                  shuffleNonce={shuffleNonce}
-                  activeDrag={activeDrag}
-                  hoveredZone={hoveredZone}
-                  shouldSuppressClick={shouldSuppressClick}
-                  onDraw={onDrawWithSound}
-                  onOpenDeclare={() => setShowDeclareModal(true, null)}
-                  onStartDrag={handleStartDrag}
-                  onEndDrag={handleEndDrag}
-                  onHoverZone={handleHoverZone}
-                  onDropOnZone={handleDropOnZone}
-                  onTouchDragStart={handleTouchDragStart}
-                />
-              )}
+                ) : (
+                  <DeckPiles
+                    isShuffling={isShuffling}
+                    shuffleLabel={shuffleLabel}
+                    shuffleNonce={shuffleNonce}
+                    activeDrag={activeDrag}
+                    hoveredZone={hoveredZone}
+                    shouldSuppressClick={shouldSuppressClick}
+                    onDraw={onDrawWithSound}
+                    onOpenDeclare={() => setShowDeclareModal(true, null)}
+                    onStartDrag={handleStartDrag}
+                    onEndDrag={handleEndDrag}
+                    onHoverZone={handleHoverZone}
+                    onDropOnZone={handleDropOnZone}
+                    onTouchDragStart={handleTouchDragStart}
+                  />
+                )}
+              </div>
             </div>
           </div>
+
+          {ringOpponents.right && (
+            <div className="shrink-0 z-20">
+              {renderOpponentTile(ringOpponents.right, "right")}
+            </div>
+          )}
         </div>
       </main>
 
       {/* BAND 3: BOTTOM AREA — LOCAL VIDEO (LEFT) + HAND TRAY (CENTER) + CONTROL DOCK (RIGHT) */}
-      <section className="shrink-0 w-full max-w-[1460px] mx-auto px-2 sm:px-3 pb-1.5 mobile-landscape:px-1.5 mobile-landscape:pb-1 flex items-end justify-between gap-2 sm:gap-3 mobile-landscape:gap-1.5 z-30">
+      <section className="shrink-0 w-full max-w-[1520px] mx-auto px-2 sm:px-3 pb-1.5 mobile-landscape:px-1.5 mobile-landscape:pb-1 flex items-end justify-between gap-2 sm:gap-3 mobile-landscape:gap-1.5 z-30">
         {/* Bottom-Left: Local Player ("You") LiveKit Video Tile */}
         {selfPlayer && (
           <div className="shrink-0">
             <VideoTile
               player={selfPlayer}
               isSelf={true}
+              seatPlacement="self"
+              bubblePlacement="top"
               videoTrack={selfMedia?.videoTrack}
               isMuted={selfMedia?.isMuted ?? (isMicMuted || micPermissionDenied)}
               isSpeaking={selfMedia?.isSpeaking ?? false}
               cameraLabel={selfMedia?.cameraLabel ?? "Camera Off"}
-              compact={isCompactVideo}
-              tileScale={adaptiveTileScale}
               turnProgress={selfPlayer.isCurrentTurn ? turnProgress : 1}
+              turnSecondsRemaining={
+                selfPlayer.isCurrentTurn ? displayedSeconds : undefined
+              }
               reactions={activeReactions.filter(
                 (r) => r.playerId === selfPlayer.id
               )}
@@ -940,8 +941,8 @@ const TableStage: React.FC<TableStageProps> = ({
                 micPermissionDenied
                   ? "bg-slate-900/70 border-white/5 text-slate-600 cursor-not-allowed"
                   : isMicMuted
-                  ? "bg-red-600/90 hover:bg-red-500 border-red-400/60 text-white"
-                  : "bg-slate-800/85 hover:bg-slate-700 border-white/10 text-emerald-300"
+                  ? "bg-rose-600/90 hover:bg-rose-500 border-rose-400/60 text-white shadow-md shadow-rose-600/25"
+                  : "bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/50 text-emerald-300 shadow-md shadow-emerald-500/15"
               }`}
             >
               {isMicMuted || micPermissionDenied ? (
@@ -966,8 +967,8 @@ const TableStage: React.FC<TableStageProps> = ({
                 cameraPermissionDenied
                   ? "bg-slate-900/70 border-white/5 text-slate-600 cursor-not-allowed"
                   : isCameraOff
-                  ? "bg-red-600/90 hover:bg-red-500 border-red-400/60 text-white"
-                  : "bg-slate-800/85 hover:bg-slate-700 border-white/10 text-sky-300"
+                  ? "bg-rose-600/90 hover:bg-rose-500 border-rose-400/60 text-white shadow-md shadow-rose-600/25"
+                  : "bg-emerald-500/20 hover:bg-emerald-500/30 border-emerald-400/50 text-emerald-300 shadow-md shadow-emerald-500/15"
               }`}
             >
               {isCameraOff || cameraPermissionDenied ? (
@@ -1066,8 +1067,19 @@ const TableStage: React.FC<TableStageProps> = ({
                   <div className="text-[10px] text-slate-400 uppercase font-semibold">
                     Status
                   </div>
-                  <div className="text-xs font-bold text-emerald-300 mt-0.5">
-                    {spotlightPlayer.hasDropped
+                  <div
+                    className={`text-xs font-bold mt-0.5 ${
+                      spotlightPlayer.isEliminated ||
+                      spotlightPlayer.connectionStatus !== "CONNECTED"
+                        ? "text-rose-400"
+                        : spotlightPlayer.hasDropped
+                        ? "text-amber-300"
+                        : "text-emerald-300"
+                    }`}
+                  >
+                    {spotlightPlayer.isEliminated
+                      ? "Eliminated"
+                      : spotlightPlayer.hasDropped
                       ? "Dropped"
                       : spotlightPlayer.connectionStatus === "CONNECTED"
                       ? "Online"
@@ -1082,19 +1094,19 @@ const TableStage: React.FC<TableStageProps> = ({
                   onClick={() => toggleMuteRemotePlayer(spotlightPlayer.id)}
                   className={`flex-1 py-2.5 rounded-xl font-bold text-xs flex items-center justify-center gap-2 border transition ${
                     isSpotlightMutedLocally
-                      ? "bg-amber-500/20 border-amber-400/50 text-amber-200 hover:bg-amber-500/30"
-                      : "bg-red-600/85 hover:bg-red-500 border-red-400/50 text-white"
+                      ? "bg-emerald-500/20 border-emerald-400/50 text-emerald-200 hover:bg-emerald-500/30"
+                      : "bg-rose-600/90 hover:bg-rose-500 border-rose-400/55 text-white"
                   }`}
                 >
                   {isSpotlightMutedLocally ? (
                     <>
                       <Volume2 className="w-4 h-4" />
-                      <span>Unmute Opponent Audio</span>
+                      <span>Unmute Player Audio</span>
                     </>
                   ) : (
                     <>
                       <VolumeX className="w-4 h-4" />
-                      <span>Mute Opponent Audio</span>
+                      <span>Mute Player Audio</span>
                     </>
                   )}
                 </button>
@@ -1571,6 +1583,10 @@ export const Table: React.FC<TableProps> = ({
   }, [gameState, currentUserId, finalRankings, isMuted]);
 
   const isVideoLive = videoStatus === "live" || videoStatus === "audio-only";
+  const activePlayerCount = Math.min(
+    6,
+    Math.max(2, gameState?.players.length ?? 2)
+  );
 
   const stageElement = (
     <TableStage
@@ -1600,6 +1616,8 @@ export const Table: React.FC<TableProps> = ({
   return (
     <div
       data-felt-theme={feltTheme}
+      data-players={activePlayerCount}
+      data-compact-video={isCompactVideo ? "true" : "false"}
       className="relative h-[100dvh] w-full overflow-hidden flex flex-col justify-between royal-backdrop text-white select-none"
     >
       {/* Shared SVG Gold Gradient for Animated Turn-Timer Borders */}
@@ -1792,7 +1810,7 @@ export const Table: React.FC<TableProps> = ({
               <Minimize2 className="w-3.5 h-3.5" />
             )}
             <span className="hidden lg:inline mobile-landscape:hidden">
-              {isCompactVideo ? "Standard" : "Compact"}
+              {isCompactVideo ? "Compact Video" : "Standard Video"}
             </span>
           </button>
 
@@ -2141,7 +2159,7 @@ export const Table: React.FC<TableProps> = ({
                     </div>
                   </div>
                   <span className="px-2 py-0.5 rounded-full bg-slate-800 text-amber-200 text-[10px] font-bold">
-                    {isCompactVideo ? "Compact" : "Standard"}
+                    {isCompactVideo ? "Compact Video" : "Standard Video"}
                   </span>
                 </button>
               </div>
