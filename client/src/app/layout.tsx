@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import { GlobalSocialShell } from "../components/friends/GlobalSocialShell";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -15,6 +16,7 @@ export default function RootLayout({
   return (
     <html lang="en" className="dark">
       <body className="bg-zinc-950 text-white min-h-[100dvh] antialiased">
+        <GlobalSocialShell />
         {children}
       </body>
     </html>

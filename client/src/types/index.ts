@@ -197,13 +197,29 @@ export interface FriendItem {
   id: string;
   friendUser: FriendUserSummary | null;
   isOnline: boolean;
+  inRoomCode?: string | null;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface PendingFriendRequest {
   id: string;
   sender: FriendUserSummary | null;
+  requester?: FriendUserSummary | null;
   createdAt: string;
+}
+
+export interface OutgoingFriendRequest {
+  id: string;
+  receiver: FriendUserSummary | null;
+  addressee?: FriendUserSummary | null;
+  createdAt: string;
+}
+
+export interface FriendPresenceUpdate {
+  userId: string;
+  isOnline: boolean;
+  inRoomCode: string | null;
 }
 
 export interface MatchHistoryItem {
@@ -223,10 +239,18 @@ export interface MatchHistoryItem {
 }
 
 export interface RoomInvite {
+  inviteId?: string;
   roomCode: string;
   roomName: string;
+  fromUser?: {
+    id: string;
+    name: string;
+  };
   fromUsername: string;
   fromUserId?: string;
+  targetPoints?: number;
+  playerCount?: number;
+  maxPlayers?: number;
   timestamp: number;
 }
 

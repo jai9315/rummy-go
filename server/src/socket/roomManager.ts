@@ -26,6 +26,18 @@ interface SocketUserData {
   user?: AuthTokenPayload;
 }
 
+interface PendingRoomInvite {
+  inviteId: string;
+  roomCode: string;
+  roomName: string;
+  fromUserId: string;
+  fromUsername: string;
+  targetUserId: string;
+  targetPoints: number;
+  playerCount: number;
+  expiresAt: number;
+}
+
 export interface RoomManagerOptions {
   hostDisconnectGraceMs?: number;
   turnTimeLimitSeconds?: number;
@@ -55,8 +67,12 @@ export class RoomManager {
   private activeGames: Map<string, Game> = new Map();
   // userId -> primary active socketId
   private userSockets: Map<string, string> = new Map();
-  // userId -> Set of all currently connected socketIds (for accurate multi-tab presence)
-  private userActiveSockets: Map<string, Set<string>> = new Map();
+  // Global onlineUsers map: userId -> Set of all currently connected socketIds (multi-tab safe)
+  private onlineUsers: Map<string, Set<string>> = new Map();
+  // inviteId -> PendingRoomInvite (60s TTL)
+  private pendingRoomInvites: Map<string, PendingRoomInvite> = new Map();
+  // roomCode -> Map<userId, expiresAt> direct invite pass (allows invited friend to join without password/code)
+  private directInvitePasses: Map<string, Map<string, number>> = new Map();
   // roomCode -> optional custom turnTimeLimitSeconds configured at creation
   private roomTurnTimeLimits: Map<string, number> = new Map();
   // socketId -> { userId, roomCode }
@@ -122,7 +138,7 @@ export class RoomManager {
    * Returns true if the user currently has at least one active Socket.IO connection.
    */
   public isUserOnline(userId: string): boolean {
-    const sockets = this.userActiveSockets.get(userId);
+    const sockets = this.onlineUsers.get(userId);
     return Boolean(sockets && sockets.size > 0);
   }
 
@@ -131,12 +147,155 @@ export class RoomManager {
    */
   public getOnlineUserIds(): string[] {
     const online: string[] = [];
-    for (const [uid, sockets] of this.userActiveSockets.entries()) {
+    for (const [uid, sockets] of this.onlineUsers.entries()) {
       if (sockets.size > 0) {
         online.push(uid);
       }
     }
     return online;
+  }
+
+  /**
+   * Returns the roomCode the user is currently connected in, or null if not in a room.
+   */
+  public getUserRoomCode(userId: string): string | null {
+    for (const sess of this.socketSessions.values()) {
+      if (sess.userId === userId && sess.roomCode) {
+        return sess.roomCode;
+      }
+    }
+    for (const [code, playersMap] of this.lobbyPlayers.entries()) {
+      const p = playersMap.get(userId);
+      if (p && p.connectionStatus === "CONNECTED") {
+        return code;
+      }
+    }
+    for (const [code, game] of this.activeGames.entries()) {
+      const p = game.getPlayer(userId);
+      if (p && p.connectionStatus === "CONNECTED") {
+        return code;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Emits a Socket.IO event to every currently active socket of `targetUserId`.
+   */
+  public emitToUser(targetUserId: string, event: string, payload: unknown): number {
+    const socketIds = this.onlineUsers.get(targetUserId);
+    if (!socketIds || socketIds.size === 0) return 0;
+    let delivered = 0;
+    for (const sid of socketIds) {
+      const targetSocket = this.findSocketById(sid);
+      if (targetSocket) {
+        targetSocket.emit(event, payload);
+        delivered++;
+      }
+    }
+    return delivered;
+  }
+
+  /**
+   * Broadcasts `FRIEND_PRESENCE_UPDATE` ({ userId, isOnline, inRoomCode }) to all
+   * accepted friends of `userId` who are currently online.
+   */
+  public async broadcastPresenceToFriends(userId: string): Promise<void> {
+    try {
+      if (typeof prisma.friendship?.findMany !== "function") return;
+      const friendships = await prisma.friendship.findMany({
+        where: {
+          status: "ACCEPTED",
+          OR: [{ requesterId: userId }, { addresseeId: userId }],
+        },
+      });
+      if (!friendships || friendships.length === 0) return;
+
+      const payload = {
+        userId,
+        isOnline: this.isUserOnline(userId),
+        inRoomCode: this.getUserRoomCode(userId),
+      };
+
+      for (const f of friendships) {
+        const friendUserId = f.requesterId === userId ? f.addresseeId : f.requesterId;
+        if (friendUserId && friendUserId !== userId) {
+          this.emitToUser(friendUserId, "FRIEND_PRESENCE_UPDATE", payload);
+        }
+      }
+    } catch {
+      // Best-effort presence broadcast (safe in unit tests with mocked prisma)
+    }
+  }
+
+  /**
+   * Notifies target user in real time when someone sends them a friend request.
+   */
+  public notifyFriendRequestReceived(
+    targetUserId: string,
+    payload: {
+      requestId: string;
+      fromUser: { id: string; username: string; profileImage?: string | null };
+    }
+  ): void {
+    this.emitToUser(targetUserId, "FRIEND_REQUEST_RECEIVED", payload);
+  }
+
+  /**
+   * Notifies both users when a friend request is accepted so live presence syncs immediately.
+   */
+  public notifyFriendshipAccepted(userAId: string, userBId: string): void {
+    this.emitToUser(userAId, "FRIENDSHIP_UPDATED", { action: "ACCEPTED", friendUserId: userBId });
+    this.emitToUser(userBId, "FRIENDSHIP_UPDATED", { action: "ACCEPTED", friendUserId: userAId });
+    this.emitToUser(userAId, "FRIEND_PRESENCE_UPDATE", {
+      userId: userBId,
+      isOnline: this.isUserOnline(userBId),
+      inRoomCode: this.getUserRoomCode(userBId),
+    });
+    this.emitToUser(userBId, "FRIEND_PRESENCE_UPDATE", {
+      userId: userAId,
+      isOnline: this.isUserOnline(userAId),
+      inRoomCode: this.getUserRoomCode(userAId),
+    });
+  }
+
+  /**
+   * Notifies both users when a friendship is removed or declined.
+   */
+  public notifyFriendshipRemoved(userAId: string, userBId: string): void {
+    this.emitToUser(userAId, "FRIENDSHIP_UPDATED", { action: "REMOVED", friendUserId: userBId });
+    this.emitToUser(userBId, "FRIENDSHIP_UPDATED", { action: "REMOVED", friendUserId: userAId });
+  }
+
+  private grantDirectInvitePass(roomCode: string, userId: string): void {
+    const code = roomCode.trim().toUpperCase();
+    if (!this.directInvitePasses.has(code)) {
+      this.directInvitePasses.set(code, new Map());
+    }
+    // Pass valid for 2 minutes so SPA route transition -> socket reconnect succeeds seamlessly
+    this.directInvitePasses.get(code)!.set(userId, Date.now() + 120_000);
+  }
+
+  private hasDirectInvitePass(roomCode: string, userId: string): boolean {
+    const code = roomCode.trim().toUpperCase();
+    const roomPasses = this.directInvitePasses.get(code);
+    if (!roomPasses) return false;
+    const exp = roomPasses.get(userId);
+    if (!exp) return false;
+    if (Date.now() > exp) {
+      roomPasses.delete(userId);
+      return false;
+    }
+    return true;
+  }
+
+  private pruneExpiredInvites(): void {
+    const now = Date.now();
+    for (const [id, inv] of this.pendingRoomInvites.entries()) {
+      if (now > inv.expiresAt) {
+        this.pendingRoomInvites.delete(id);
+      }
+    }
   }
 
   /**
@@ -154,163 +313,178 @@ export class RoomManager {
     );
   }
 
-  public handleConnection(socket: Socket): void {
-    const user = (socket.data as SocketUserData).user;
-    if (!user) {
-      socket.disconnect();
-      return;
+  /**
+   * Shared room-joining implementation used by both `JOIN_ROOM` and `ACCEPT_ROOM_INVITE`.
+   * Returns true if the user was seated/reconnected cleanly, false if rejected.
+   */
+  private async joinUserToRoom(
+    socket: Socket,
+    user: AuthTokenPayload,
+    rawCode: string,
+    providedPassword?: string,
+    options?: { bypassPassword?: boolean }
+  ): Promise<boolean> {
+    if (!rawCode) {
+      socket.emit("ERROR", { message: "Invalid room code" });
+      return false;
     }
 
+    const code = rawCode.toUpperCase();
+    const room = await prisma.room.findUnique({
+      where: { roomCode: code },
+      include: { host: true },
+    });
+
+    if (!room) {
+      socket.emit("ERROR", { message: "Room not found" });
+      return false;
+    }
+
+    const existingPlayersMap = this.lobbyPlayers.get(code);
+    const activeGame = this.activeGames.get(code);
+    const existingLobbyPlayer = existingPlayersMap?.get(user.userId);
+    const existingGamePlayer = activeGame?.getPlayer(user.userId);
+    const isReconnectingPlayer = Boolean(
+      existingLobbyPlayer || existingGamePlayer
+    );
+
+    // Determine effective current host (in-memory host transfer takes precedence)
+    const currentHostEntry = existingPlayersMap
+      ? Array.from(existingPlayersMap.values()).find((p) => p.isHost)
+      : undefined;
+    const currentHostId = currentHostEntry?.userId ?? room.hostId;
+
+    const bypassPassword = Boolean(
+      options?.bypassPassword || this.hasDirectInvitePass(code, user.userId)
+    );
+
+    // Enforce optional room password on new non-host joins BEFORE joining channel
+    if (
+      room.passwordHash &&
+      !isReconnectingPlayer &&
+      !bypassPassword &&
+      user.userId !== currentHostId
+    ) {
+      const pwd = typeof providedPassword === "string" ? providedPassword : "";
+      if (!pwd) {
+        socket.emit("ERROR", {
+          message: "Room password is required",
+          code: "PASSWORD_REQUIRED",
+        });
+        return false;
+      }
+      const passwordMatches = await bcrypt.compare(pwd, room.passwordHash);
+      if (!passwordMatches) {
+        socket.emit("ERROR", {
+          message: "Incorrect room password",
+          code: "INVALID_PASSWORD",
+        });
+        return false;
+      }
+    }
+
+    // Block ANY new non-member user once status !== "WAITING".
+    // Existing room members reconnecting are always permitted back in.
+    if (!isReconnectingPlayer) {
+      const gameHasStarted =
+        (activeGame && activeGame.status !== "WAITING") ||
+        room.status !== "WAITING";
+
+      if (gameHasStarted) {
+        socket.emit("ERROR", { message: "Game has already started" });
+        return false;
+      }
+
+      const currentCount = existingPlayersMap?.size ?? 0;
+      if (currentCount >= room.maxPlayers) {
+        socket.emit("ERROR", { message: "Room is full" });
+        return false;
+      }
+    }
+
+    // Cleanly leave any previously joined room on this socket
+    const prevSession = this.socketSessions.get(socket.id);
+    if (prevSession && prevSession.roomCode !== code) {
+      socket.leave(`room_${prevSession.roomCode}`);
+    }
+
+    if (!this.lobbyPlayers.has(code)) {
+      this.lobbyPlayers.set(code, new Map());
+    }
+
+    const playersMap = this.lobbyPlayers.get(code)!;
+    let playerEntry = playersMap.get(user.userId);
+
+    if (playerEntry) {
+      // Reconnection / dual-tab handoff to existing seat
+      playerEntry.socketId = socket.id;
+      playerEntry.connectionStatus = "CONNECTED";
+      if (playerEntry.isHost) {
+        this.clearHostTransferTimer(code);
+      }
+    } else {
+      // Reserve the seat in memory IMMEDIATELY (before any async yield) so
+      // a concurrent JOIN_ROOM for another user cannot compute the same seat
+      // and violate the unique (roomId, seatNumber) constraint.
+      const seat = existingGamePlayer
+        ? existingGamePlayer.seatNumber
+        : this.findNextAvailableSeat(playersMap, room.maxPlayers);
+
+      const isHost = user.userId === currentHostId;
+      playerEntry = {
+        userId: user.userId,
+        username: user.username,
+        profileImage: existingGamePlayer?.profileImage || "",
+        seatNumber: seat,
+        isReady: isHost, // Host is ready by default
+        connectionStatus: "CONNECTED",
+        socketId: socket.id,
+        isHost,
+      };
+      playersMap.set(user.userId, playerEntry);
+      if (isHost) {
+        this.clearHostTransferTimer(code);
+      }
+    }
+
+    // Keep latest active socket mapping synced
     this.userSockets.set(user.userId, socket.id);
-    if (!this.userActiveSockets.has(user.userId)) {
-      this.userActiveSockets.set(user.userId, new Set());
-    }
-    this.userActiveSockets.get(user.userId)!.add(socket.id);
 
-    // Event: JOIN_ROOM
-    socket.on(
-      "JOIN_ROOM",
-      async (payload: { roomCode?: unknown; password?: unknown }) => {
-        try {
-          const rawCode =
-            typeof payload?.roomCode === "string" ? payload.roomCode.trim() : "";
-          if (!rawCode) {
-            socket.emit("ERROR", { message: "Invalid room code" });
-            return;
-          }
+    // Guards passed and seat reserved — now join channel and record session
+    const roomChannel = `room_${code}`;
+    socket.join(roomChannel);
+    this.socketSessions.set(socket.id, { userId: user.userId, roomCode: code });
 
-          const code = rawCode.toUpperCase();
-          const room = await prisma.room.findUnique({
-            where: { roomCode: code },
-            include: { host: true },
-          });
+    if (!existingLobbyPlayer) {
+      const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
+      playerEntry.profileImage =
+        dbUser?.profileImage ||
+        `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`;
 
-          if (!room) {
-            socket.emit("ERROR", { message: "Room not found" });
-            return;
-          }
-
-          const existingPlayersMap = this.lobbyPlayers.get(code);
-          const activeGame = this.activeGames.get(code);
-          const existingLobbyPlayer = existingPlayersMap?.get(user.userId);
-          const existingGamePlayer = activeGame?.getPlayer(user.userId);
-          const isReconnectingPlayer = Boolean(
-            existingLobbyPlayer || existingGamePlayer
-          );
-
-          // Determine effective current host (in-memory host transfer takes precedence)
-          const currentHostEntry = existingPlayersMap
-            ? Array.from(existingPlayersMap.values()).find((p) => p.isHost)
-            : undefined;
-          const currentHostId = currentHostEntry?.userId ?? room.hostId;
-
-          // Enforce optional room password on new non-host joins BEFORE joining channel
-          if (
-            room.passwordHash &&
-            !isReconnectingPlayer &&
-            user.userId !== currentHostId
-          ) {
-            const providedPassword =
-              typeof payload?.password === "string" ? payload.password : "";
-            if (!providedPassword) {
-              socket.emit("ERROR", {
-                message: "Room password is required",
-                code: "PASSWORD_REQUIRED",
-              });
-              return;
-            }
-            const passwordMatches = await bcrypt.compare(
-              providedPassword,
-              room.passwordHash
-            );
-            if (!passwordMatches) {
-              socket.emit("ERROR", {
-                message: "Incorrect room password",
-                code: "INVALID_PASSWORD",
-              });
-              return;
-            }
-          }
-
-          // Block ANY new non-member user once status !== "WAITING".
-          // Existing room members reconnecting are always permitted back in.
-          if (!isReconnectingPlayer) {
-            const gameHasStarted =
-              (activeGame && activeGame.status !== "WAITING") ||
-              room.status !== "WAITING";
-
-            if (gameHasStarted) {
-              socket.emit("ERROR", { message: "Game has already started" });
-              return;
-            }
-
-            const currentCount = existingPlayersMap?.size ?? 0;
-            if (currentCount >= room.maxPlayers) {
-              socket.emit("ERROR", { message: "Room is full" });
-              return;
-            }
-          }
-
-          // Cleanly leave any previously joined room on this socket
-          const prevSession = this.socketSessions.get(socket.id);
-          if (prevSession && prevSession.roomCode !== code) {
-            socket.leave(`room_${prevSession.roomCode}`);
-          }
-
-          if (!this.lobbyPlayers.has(code)) {
-            this.lobbyPlayers.set(code, new Map());
-          }
-
-          const playersMap = this.lobbyPlayers.get(code)!;
-          let playerEntry = playersMap.get(user.userId);
-
-          if (playerEntry) {
-            // Reconnection / dual-tab handoff to existing seat
-            playerEntry.socketId = socket.id;
-            playerEntry.connectionStatus = "CONNECTED";
-            if (playerEntry.isHost) {
-              this.clearHostTransferTimer(code);
-            }
-          } else {
-            // Reserve the seat in memory IMMEDIATELY (before any async yield) so
-            // a concurrent JOIN_ROOM for another user cannot compute the same seat
-            // and violate the unique (roomId, seatNumber) constraint.
-            const seat = existingGamePlayer
-              ? existingGamePlayer.seatNumber
-              : this.findNextAvailableSeat(playersMap, room.maxPlayers);
-
-            const isHost = user.userId === currentHostId;
-            playerEntry = {
-              userId: user.userId,
-              username: user.username,
-              profileImage: existingGamePlayer?.profileImage || "",
-              seatNumber: seat,
-              isReady: isHost, // Host is ready by default
-              connectionStatus: "CONNECTED",
-              socketId: socket.id,
-              isHost,
-            };
+      // Persist RoomPlayer to DB before broadcasting lobby.
+      try {
+        await prisma.roomPlayer.upsert({
+          where: {
+            roomId_userId: { roomId: room.id, userId: user.userId },
+          },
+          create: {
+            roomId: room.id,
+            userId: user.userId,
+            seatNumber: playerEntry.seatNumber,
+            isReady: playerEntry.isReady,
+            connectionStatus: "CONNECTED",
+          },
+          update: {
+            connectionStatus: "CONNECTED",
+          },
+        });
+      } catch (dbErr: unknown) {
+        const dbErrMsg = getErrorMessage(dbErr, String(dbErr));
+        if (/unique constraint/i.test(dbErrMsg)) {
+          const newSeat = this.findNextAvailableSeat(playersMap, room.maxPlayers);
+          if (newSeat <= room.maxPlayers) {
+            playerEntry.seatNumber = newSeat;
             playersMap.set(user.userId, playerEntry);
-            if (isHost) {
-              this.clearHostTransferTimer(code);
-            }
-          }
-
-          // Keep latest active socket mapping synced
-          this.userSockets.set(user.userId, socket.id);
-
-          // Guards passed and seat reserved — now join channel and record session
-          const roomChannel = `room_${code}`;
-          socket.join(roomChannel);
-          this.socketSessions.set(socket.id, { userId: user.userId, roomCode: code });
-
-          if (!existingLobbyPlayer) {
-            const dbUser = await prisma.user.findUnique({ where: { id: user.userId } });
-            playerEntry.profileImage =
-              dbUser?.profileImage ||
-              `https://api.dicebear.com/7.x/bottts/svg?seed=${user.username}`;
-
-            // Persist RoomPlayer to DB before broadcasting lobby.
             try {
               await prisma.roomPlayer.upsert({
                 where: {
@@ -319,7 +493,7 @@ export class RoomManager {
                 create: {
                   roomId: room.id,
                   userId: user.userId,
-                  seatNumber: playerEntry.seatNumber,
+                  seatNumber: newSeat,
                   isReady: playerEntry.isReady,
                   connectionStatus: "CONNECTED",
                 },
@@ -327,96 +501,109 @@ export class RoomManager {
                   connectionStatus: "CONNECTED",
                 },
               });
-            } catch (dbErr: unknown) {
-              const dbErrMsg = getErrorMessage(dbErr, String(dbErr));
-              if (/unique constraint/i.test(dbErrMsg)) {
-                const newSeat = this.findNextAvailableSeat(playersMap, room.maxPlayers);
-                if (newSeat <= room.maxPlayers) {
-                  playerEntry.seatNumber = newSeat;
-                  playersMap.set(user.userId, playerEntry);
-                  try {
-                    await prisma.roomPlayer.upsert({
-                      where: {
-                        roomId_userId: { roomId: room.id, userId: user.userId },
-                      },
-                      create: {
-                        roomId: room.id,
-                        userId: user.userId,
-                        seatNumber: newSeat,
-                        isReady: playerEntry.isReady,
-                        connectionStatus: "CONNECTED",
-                      },
-                      update: {
-                        connectionStatus: "CONNECTED",
-                      },
-                    });
-                  } catch (dbErr2: unknown) {
-                    console.error(
-                      `Failed to persist RoomPlayer (retry) for user ${user.userId} in room ${code}:`,
-                      getErrorMessage(dbErr2, String(dbErr2))
-                    );
-                  }
-                } else {
-                  console.error(
-                    `Room ${code} is full — could not assign seat to user ${user.userId}`
-                  );
-                }
-              } else {
-                console.error(
-                  `Failed to persist RoomPlayer for user ${user.userId} in room ${code}:`,
-                  dbErrMsg
-                );
-              }
+            } catch (dbErr2: unknown) {
+              console.error(
+                `Failed to persist RoomPlayer (retry) for user ${user.userId} in room ${code}:`,
+                getErrorMessage(dbErr2, String(dbErr2))
+              );
             }
-          } else if (typeof prisma.roomPlayer?.update === "function") {
-            prisma.roomPlayer
-              .update({
-                where: { roomId: room.id, userId: user.userId },
-                data: { connectionStatus: "CONNECTED" },
-              })
-              .catch(() => {});
+          } else {
+            console.error(
+              `Room ${code} is full — could not assign seat to user ${user.userId}`
+            );
           }
+        } else {
+          console.error(
+            `Failed to persist RoomPlayer for user ${user.userId} in room ${code}:`,
+            dbErrMsg
+          );
+        }
+      }
+    } else if (typeof prisma.roomPlayer?.update === "function") {
+      prisma.roomPlayer
+        .update({
+          where: { roomId: room.id, userId: user.userId },
+          data: { connectionStatus: "CONNECTED" },
+        })
+        .catch(() => {});
+    }
 
-          // Broadcast updated lobby (after DB write attempt so lobby reflects persisted state)
-          this.broadcastLobby(code);
+    // Broadcast updated lobby (after DB write attempt so lobby reflects persisted state)
+    this.broadcastLobby(code);
 
-          // Check if an active game is in progress (Reconnection & Timer Resume Handling)
-          const game = this.activeGames.get(code);
-          const playerReturnedToLobby =
-            game?.status === "GAME_OVER" &&
-            this.returnedToLobby.get(code)?.has(user.userId);
+    // Notify accepted friends of live inRoomCode presence update
+    void this.broadcastPresenceToFriends(user.userId);
 
-          if (game && game.getPlayer(user.userId) && !playerReturnedToLobby) {
-            game.setPlayerConnection(user.userId, "CONNECTED");
+    // Check if an active game is in progress (Reconnection & Timer Resume Handling)
+    const game = this.activeGames.get(code);
+    const playerReturnedToLobby =
+      game?.status === "GAME_OVER" &&
+      this.returnedToLobby.get(code)?.has(user.userId);
 
-            // If turn/show/toss timer was paused because all players had disconnected,
-            // restart it automatically on reconnect!
-            if (
-              (game.status === "TOSS" ||
-                game.status === "PLAYING" ||
-                game.status === "SHOW") &&
-              !game.isTimerRunning()
-            ) {
-              game.resumeTimer();
-            }
+    if (game && game.getPlayer(user.userId) && !playerReturnedToLobby) {
+      game.setPlayerConnection(user.userId, "CONNECTED");
 
-            const refreshedState = game.getPublicState();
-            // Broadcast updated public state (connection status + restarted turnEndsAt)
-            this.io.to(roomChannel).emit("GAME_STATE_UPDATE", refreshedState);
-            // Also emit directly to reconnecting socket in case mock IO doesn't route room broadcasts
-            socket.emit("GAME_STATE_UPDATE", refreshedState);
+      // If turn/show/toss timer was paused because all players had disconnected,
+      // restart it automatically on reconnect!
+      if (
+        (game.status === "TOSS" ||
+          game.status === "PLAYING" ||
+          game.status === "SHOW") &&
+        !game.isTimerRunning()
+      ) {
+        game.resumeTimer();
+      }
 
-            // CRITICAL: Emit private cards ONLY to this player (once cards have been dealt)
-            const privateCards = game.getPlayerCards(user.userId);
-            if (privateCards.length > 0) {
-              socket.emit("PRIVATE_HAND_UPDATE", {
-                type: "PRIVATE_HAND_UPDATE",
-                playerId: user.userId,
-                cards: privateCards,
-                timestamp: Date.now(),
-              });
-            }
-          }
+      const refreshedState = game.getPublicState();
+      // Broadcast updated public state (connection status + restarted turnEndsAt)
+      this.io.to(roomChannel).emit("GAME_STATE_UPDATE", refreshedState);
+      // Also emit directly to reconnecting socket in case mock IO doesn't route room broadcasts
+      socket.emit("GAME_STATE_UPDATE", refreshedState);
+
+      // CRITICAL: Emit private cards ONLY to this player (once cards have been dealt)
+      const privateCards = game.getPlayerCards(user.userId);
+      if (privateCards.length > 0) {
+        socket.emit("PRIVATE_HAND_UPDATE", {
+          type: "PRIVATE_HAND_UPDATE",
+          playerId: user.userId,
+          cards: privateCards,
+          timestamp: Date.now(),
+        });
+      }
+    }
+
+    return true;
+  }
+
+  public handleConnection(socket: Socket): void {
+    const user = (socket.data as SocketUserData).user;
+    if (!user) {
+      socket.disconnect();
+      return;
+    }
+
+    const wasOffline = !this.isUserOnline(user.userId);
+    this.userSockets.set(user.userId, socket.id);
+    if (!this.onlineUsers.has(user.userId)) {
+      this.onlineUsers.set(user.userId, new Set());
+    }
+    this.onlineUsers.get(user.userId)!.add(socket.id);
+
+    // Notify accepted online friends when user comes online
+    if (wasOffline) {
+      void this.broadcastPresenceToFriends(user.userId);
+    }
+
+    // Event: JOIN_ROOM
+    socket.on(
+      "JOIN_ROOM",
+      async (payload: { roomCode?: unknown; password?: unknown }) => {
+        try {
+          const rawCode =
+            typeof payload?.roomCode === "string" ? payload.roomCode.trim() : "";
+          const providedPassword =
+            typeof payload?.password === "string" ? payload.password : undefined;
+          await this.joinUserToRoom(socket, user, rawCode, providedPassword);
         } catch (err: unknown) {
           console.error("JOIN_ROOM error:", err);
           socket.emit("ERROR", {
@@ -493,6 +680,7 @@ export class RoomManager {
       }
 
       socket.emit("LEFT_ROOM", { roomCode });
+      void this.broadcastPresenceToFriends(userId);
     });
 
     // Event: KICK_PLAYER (Host only, WAITING lobby only)
@@ -567,6 +755,7 @@ export class RoomManager {
           targetSocket.emit("ERROR", { message: kickedMessage });
         }
       }
+      void this.broadcastPresenceToFriends(targetUserId);
 
       this.broadcastLobby(roomCode);
     });
@@ -1010,11 +1199,236 @@ export class RoomManager {
       });
     });
 
-    // Event: INVITE_FRIEND (In-app room invitation to an online friend)
+    // Event: SEND_ROOM_INVITE (Strict friend-verified direct room invite — no code needed)
+    socket.on(
+      "SEND_ROOM_INVITE",
+      async (payload: { targetUserId?: unknown; roomCode?: unknown }) => {
+        try {
+          this.pruneExpiredInvites();
+          const targetUserId =
+            typeof payload?.targetUserId === "string"
+              ? payload.targetUserId.trim()
+              : "";
+          const rawCode =
+            typeof payload?.roomCode === "string" ? payload.roomCode.trim() : "";
+
+          if (!targetUserId || !rawCode) {
+            socket.emit("ERROR", {
+              message: "targetUserId and roomCode are required to send an invite",
+            });
+            return;
+          }
+
+          if (targetUserId === user.userId) {
+            socket.emit("ERROR", { message: "Cannot invite yourself" });
+            return;
+          }
+
+          const code = rawCode.toUpperCase();
+          if (!this.isActiveMember(code, user.userId)) {
+            socket.emit("ERROR", {
+              message: "You must be an active member of the room to invite friends",
+            });
+            return;
+          }
+
+          const room = await prisma.room.findUnique({ where: { roomCode: code } });
+          if (!room) {
+            socket.emit("ERROR", { message: "Room not found" });
+            return;
+          }
+
+          const activeGame = this.activeGames.get(code);
+          if (
+            room.status !== "WAITING" ||
+            (activeGame && activeGame.status !== "WAITING")
+          ) {
+            socket.emit("ERROR", {
+              message: "Cannot invite friends once the game has already started",
+            });
+            return;
+          }
+
+          const playersMap = this.lobbyPlayers.get(code);
+          const currentPlayerCount = playersMap?.size ?? 0;
+          const roomCap = Math.min(room.maxPlayers || 6, 6);
+          if (currentPlayerCount >= roomCap) {
+            socket.emit("ERROR", { message: "Room is already full" });
+            return;
+          }
+
+          if (playersMap?.has(targetUserId)) {
+            socket.emit("ERROR", {
+              message: "This friend is already seated in the room",
+            });
+            return;
+          }
+
+          // Verify targetUserId is an ACCEPTED friend
+          const friendship = await prisma.friendship.findFirst({
+            where: {
+              status: "ACCEPTED",
+              OR: [
+                { requesterId: user.userId, addresseeId: targetUserId },
+                { requesterId: targetUserId, addresseeId: user.userId },
+              ],
+            },
+          });
+
+          if (!friendship) {
+            socket.emit("ERROR", {
+              message: "You can only send direct room invites to accepted friends",
+            });
+            return;
+          }
+
+          if (!this.isUserOnline(targetUserId)) {
+            socket.emit("ERROR", { message: "Friend is currently offline" });
+            return;
+          }
+
+          const inviteId = crypto.randomUUID();
+          const targetPoints = room.targetPoints ?? 101;
+          const pendingInvite: PendingRoomInvite = {
+            inviteId,
+            roomCode: room.roomCode,
+            roomName: room.roomName,
+            fromUserId: user.userId,
+            fromUsername: user.username,
+            targetUserId,
+            targetPoints,
+            playerCount: currentPlayerCount,
+            expiresAt: Date.now() + 60_000,
+          };
+          this.pendingRoomInvites.set(inviteId, pendingInvite);
+          this.grantDirectInvitePass(room.roomCode, targetUserId);
+
+          const invitePayload = {
+            inviteId,
+            roomCode: room.roomCode,
+            roomName: room.roomName,
+            fromUser: { id: user.userId, name: user.username },
+            fromUsername: user.username,
+            fromUserId: user.userId,
+            targetPoints,
+            playerCount: currentPlayerCount,
+            maxPlayers: room.maxPlayers,
+            timestamp: Date.now(),
+          };
+
+          const delivered = this.emitToUser(
+            targetUserId,
+            "ROOM_INVITE_RECEIVED",
+            invitePayload
+          );
+          if (delivered === 0) {
+            this.pendingRoomInvites.delete(inviteId);
+            socket.emit("ERROR", { message: "Friend is currently offline" });
+            return;
+          }
+
+          const ackPayload = {
+            inviteId,
+            targetUserId,
+            friendId: targetUserId,
+            roomCode: room.roomCode,
+          };
+          socket.emit("ROOM_INVITE_SENT", ackPayload);
+          socket.emit("INVITE_SENT", ackPayload);
+        } catch (err: unknown) {
+          console.error("SEND_ROOM_INVITE error:", err);
+          socket.emit("ERROR", {
+            message: getErrorMessage(err, "Failed to send room invitation"),
+          });
+        }
+      }
+    );
+
+    // Event: ACCEPT_ROOM_INVITE (Instant direct join into roomCode without typing code/password)
+    socket.on(
+      "ACCEPT_ROOM_INVITE",
+      async (payload: { inviteId?: unknown; roomCode?: unknown }) => {
+        try {
+          this.pruneExpiredInvites();
+          const inviteId =
+            typeof payload?.inviteId === "string" ? payload.inviteId.trim() : "";
+          const rawCode =
+            typeof payload?.roomCode === "string" ? payload.roomCode.trim() : "";
+
+          let resolvedCode = rawCode.toUpperCase();
+          let matchedInvite: PendingRoomInvite | undefined;
+
+          if (inviteId) {
+            const inv = this.pendingRoomInvites.get(inviteId);
+            if (!inv || inv.targetUserId !== user.userId) {
+              socket.emit("ERROR", {
+                message: "Room invite has expired or is invalid",
+              });
+              return;
+            }
+            matchedInvite = inv;
+            resolvedCode = inv.roomCode;
+          } else if (resolvedCode) {
+            for (const inv of this.pendingRoomInvites.values()) {
+              if (inv.targetUserId === user.userId && inv.roomCode === resolvedCode) {
+                matchedInvite = inv;
+                break;
+              }
+            }
+          }
+
+          if (!resolvedCode) {
+            socket.emit("ERROR", {
+              message: "inviteId or roomCode is required to accept an invite",
+            });
+            return;
+          }
+
+          const hasPass =
+            Boolean(matchedInvite) ||
+            this.hasDirectInvitePass(resolvedCode, user.userId);
+          if (!hasPass) {
+            socket.emit("ERROR", {
+              message: "No valid direct invitation found for this room",
+            });
+            return;
+          }
+
+          // Refresh direct pass so subsequent SPA route transition to /room/[code] also succeeds cleanly
+          this.grantDirectInvitePass(resolvedCode, user.userId);
+
+          const joined = await this.joinUserToRoom(
+            socket,
+            user,
+            resolvedCode,
+            undefined,
+            { bypassPassword: true }
+          );
+
+          if (joined) {
+            if (matchedInvite) {
+              this.pendingRoomInvites.delete(matchedInvite.inviteId);
+            }
+            socket.emit("ROOM_INVITE_ACCEPTED", {
+              inviteId: matchedInvite?.inviteId ?? inviteId,
+              roomCode: resolvedCode,
+            });
+          }
+        } catch (err: unknown) {
+          console.error("ACCEPT_ROOM_INVITE error:", err);
+          socket.emit("ERROR", {
+            message: getErrorMessage(err, "Failed to join invited room"),
+          });
+        }
+      }
+    );
+
+    // Event: INVITE_FRIEND (Legacy alias preserved for backwards compatibility)
     socket.on(
       "INVITE_FRIEND",
       async (payload: { friendId?: unknown; roomCode?: unknown }) => {
         try {
+          this.pruneExpiredInvites();
           const friendId =
             typeof payload?.friendId === "string" ? payload.friendId.trim() : "";
           const rawCode =
@@ -1046,35 +1460,53 @@ export class RoomManager {
             return;
           }
 
-          const targetSocketIds = this.userActiveSockets.get(friendId);
-          if (!targetSocketIds || targetSocketIds.size === 0) {
+          if (!this.isUserOnline(friendId)) {
             socket.emit("ERROR", { message: "Friend is currently offline" });
             return;
           }
 
-          const invitePayload = {
+          const inviteId = crypto.randomUUID();
+          const currentPlayerCount = this.lobbyPlayers.get(code)?.size ?? 0;
+          const targetPoints = room.targetPoints ?? 101;
+          this.pendingRoomInvites.set(inviteId, {
+            inviteId,
             roomCode: room.roomCode,
             roomName: room.roomName,
+            fromUserId: user.userId,
+            fromUsername: user.username,
+            targetUserId: friendId,
+            targetPoints,
+            playerCount: currentPlayerCount,
+            expiresAt: Date.now() + 60_000,
+          });
+          this.grantDirectInvitePass(room.roomCode, friendId);
+
+          const invitePayload = {
+            inviteId,
+            roomCode: room.roomCode,
+            roomName: room.roomName,
+            fromUser: { id: user.userId, name: user.username },
             fromUsername: user.username,
             fromUserId: user.userId,
+            targetPoints,
+            playerCount: currentPlayerCount,
+            maxPlayers: room.maxPlayers,
             timestamp: Date.now(),
           };
 
-          let delivered = 0;
-          for (const sid of targetSocketIds) {
-            const targetSocket = this.findSocketById(sid);
-            if (targetSocket) {
-              targetSocket.emit("ROOM_INVITE_RECEIVED", invitePayload);
-              delivered++;
-            }
-          }
-
+          const delivered = this.emitToUser(
+            friendId,
+            "ROOM_INVITE_RECEIVED",
+            invitePayload
+          );
           if (delivered === 0) {
+            this.pendingRoomInvites.delete(inviteId);
             socket.emit("ERROR", { message: "Friend is currently offline" });
             return;
           }
 
           socket.emit("INVITE_SENT", {
+            inviteId,
             friendId,
             roomCode: room.roomCode,
           });
@@ -1134,18 +1566,19 @@ export class RoomManager {
       this.socketSessions.delete(socket.id);
 
       // Update multi-tab presence set
-      const activeSet = this.userActiveSockets.get(user.userId);
+      const activeSet = this.onlineUsers.get(user.userId);
       if (activeSet) {
         activeSet.delete(socket.id);
         if (activeSet.size === 0) {
-          this.userActiveSockets.delete(user.userId);
+          this.onlineUsers.delete(user.userId);
         }
       }
+      const nowOffline = !this.isUserOnline(user.userId);
 
       // CRITICAL: Only delete userSockets mapping if THIS disconnecting socket
       // is still the active socket for user.userId (prevents dual-tab/reconnect race).
       if (this.userSockets.get(user.userId) === socket.id) {
-        const remaining = this.userActiveSockets.get(user.userId);
+        const remaining = this.onlineUsers.get(user.userId);
         const fallbackSocketId = remaining ? Array.from(remaining)[remaining.size - 1] : undefined;
         if (fallbackSocketId) {
           this.userSockets.set(user.userId, fallbackSocketId);
@@ -1211,6 +1644,11 @@ export class RoomManager {
         }
 
         this.broadcastLobby(roomCode);
+      }
+
+      // Broadcast real-time offline / room-exit presence update to accepted online friends
+      if (nowOffline || session) {
+        void this.broadcastPresenceToFriends(user.userId);
       }
     });
   }

@@ -34,6 +34,17 @@ export interface FriendRecord {
   receiver?: Partial<UserRecord> | null;
 }
 
+export interface FriendshipRecord {
+  id: string;
+  requesterId: string;
+  addresseeId: string;
+  status: "PENDING" | "ACCEPTED" | string;
+  createdAt: string;
+  updatedAt: string;
+  requester?: Partial<UserRecord> | null;
+  addressee?: Partial<UserRecord> | null;
+}
+
 export interface RoomRecord {
   id: string;
   roomCode: string;
@@ -113,7 +124,8 @@ export type TableName =
   | "games"
   | "game_actions"
   | "game_results"
-  | "friends";
+  | "friends"
+  | "friendships";
 
 type PrimitiveValue = string | number | boolean | null | undefined;
 
@@ -268,6 +280,14 @@ const TABLE_COLUMNS: Record<TableName, ReadonlySet<string>> = {
     "status",
     "created_at",
   ]),
+  friendships: new Set([
+    "id",
+    "requester_id",
+    "addressee_id",
+    "status",
+    "created_at",
+    "updated_at",
+  ]),
 };
 
 const RELATIONS: Record<TableName, Record<string, RelationDef>> = {
@@ -277,6 +297,8 @@ const RELATIONS: Record<TableName, Record<string, RelationDef>> = {
     gameResults: { type: "one-to-many", targetTable: "game_results", localKey: "id", targetKey: "playerId" },
     sentFriends: { type: "one-to-many", targetTable: "friends", localKey: "id", targetKey: "senderId" },
     rcvdFriends: { type: "one-to-many", targetTable: "friends", localKey: "id", targetKey: "receiverId" },
+    sentFriendships: { type: "one-to-many", targetTable: "friendships", localKey: "id", targetKey: "requesterId" },
+    receivedFriendships: { type: "one-to-many", targetTable: "friendships", localKey: "id", targetKey: "addresseeId" },
   },
   rooms: {
     host: { type: "many-to-one", targetTable: "users", localKey: "hostId", targetKey: "id" },
@@ -302,6 +324,10 @@ const RELATIONS: Record<TableName, Record<string, RelationDef>> = {
   friends: {
     sender: { type: "many-to-one", targetTable: "users", localKey: "senderId", targetKey: "id" },
     receiver: { type: "many-to-one", targetTable: "users", localKey: "receiverId", targetKey: "id" },
+  },
+  friendships: {
+    requester: { type: "many-to-one", targetTable: "users", localKey: "requesterId", targetKey: "id" },
+    addressee: { type: "many-to-one", targetTable: "users", localKey: "addresseeId", targetKey: "id" },
   },
 };
 
@@ -426,13 +452,32 @@ CREATE TABLE IF NOT EXISTS friends (
   FOREIGN KEY (receiver_id) REFERENCES users(id) ON DELETE CASCADE,
   UNIQUE (sender_id, receiver_id)
 );
+CREATE TABLE IF NOT EXISTS friendships (
+  id TEXT PRIMARY KEY DEFAULT (lower(hex(randomblob(16)))),
+  requester_id TEXT NOT NULL,
+  addressee_id TEXT NOT NULL,
+  status TEXT DEFAULT 'PENDING',
+  created_at TEXT DEFAULT (datetime('now')),
+  updated_at TEXT DEFAULT (datetime('now')),
+  FOREIGN KEY (requester_id) REFERENCES users(id) ON DELETE CASCADE,
+  FOREIGN KEY (addressee_id) REFERENCES users(id) ON DELETE CASCADE,
+  UNIQUE (requester_id, addressee_id)
+);
 `);
 
-  // Safe idempotent schema migration for pre-existing SQLite DB files
+  // Safe idempotent schema migrations for pre-existing SQLite DB files
   try {
     db.exec("ALTER TABLE rooms ADD COLUMN target_points INTEGER DEFAULT 101;");
   } catch {
     // Column already exists
+  }
+  try {
+    db.exec(`
+      INSERT OR IGNORE INTO friendships (id, requester_id, addressee_id, status, created_at, updated_at)
+      SELECT id, sender_id, receiver_id, status, created_at, created_at FROM friends;
+    `);
+  } catch {
+    // Legacy table migration optional
   }
 
   dbInstance = db;
@@ -983,6 +1028,17 @@ export interface FriendCreateInput {
 
 export type FriendUpdateInput = Partial<FriendCreateInput>;
 
+export interface FriendshipCreateInput {
+  id?: string;
+  requesterId: string;
+  addresseeId: string;
+  status?: "PENDING" | "ACCEPTED";
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+export type FriendshipUpdateInput = Partial<FriendshipCreateInput>;
+
 // ---------------------------------------------------------------------------
 // Exported Prisma-Compatible Strictly-Typed Client
 // ---------------------------------------------------------------------------
@@ -998,6 +1054,11 @@ export const prisma = {
     "game_results"
   ),
   friend: createTableClient<FriendRecord, FriendCreateInput, FriendUpdateInput>("friends"),
+  friendship: createTableClient<
+    FriendshipRecord,
+    FriendshipCreateInput,
+    FriendshipUpdateInput
+  >("friendships"),
   gameAction: createTableClient<GameActionRecord, GameActionCreateInput, GameActionUpdateInput>(
     "game_actions"
   ),

@@ -1,6 +1,7 @@
 import {
   FriendItem,
   MatchHistoryItem,
+  OutgoingFriendRequest,
   PendingFriendRequest,
   RoomInfo,
   User,
@@ -106,21 +107,38 @@ export const api = {
 
   // Friends & Social
   getFriends: () =>
-    apiRequest<{ friends: FriendItem[]; pendingRequests: PendingFriendRequest[] }>(
-      "/api/friends"
-    ),
+    apiRequest<{
+      friends: FriendItem[];
+      pendingRequests: PendingFriendRequest[];
+      outgoingRequests?: OutgoingFriendRequest[];
+    }>("/api/friends"),
 
-  sendFriendRequest: (username: string) =>
+  sendFriendRequest: (
+    target: string | { username?: string; targetUserId?: string }
+  ) =>
     apiRequest<{ message: string }>("/api/friends/request", {
       method: "POST",
-      body: JSON.stringify({ username }),
+      body: JSON.stringify(
+        typeof target === "string" ? { username: target } : target
+      ),
     }),
 
-  respondFriendRequest: (requestId: string, action: "ACCEPT" | "REJECT") =>
+  respondFriendRequest: (
+    requestId: string,
+    action: "ACCEPT" | "DECLINE" | "REJECT"
+  ) =>
     apiRequest<{ message: string }>("/api/friends/respond", {
       method: "POST",
       body: JSON.stringify({ requestId, action }),
     }),
+
+  removeFriend: (friendId: string) =>
+    apiRequest<{ message: string }>(
+      `/api/friends/${encodeURIComponent(friendId)}`,
+      {
+        method: "DELETE",
+      }
+    ),
 
   getHistory: () => apiRequest<{ history: MatchHistoryItem[] }>("/api/friends/history"),
 };

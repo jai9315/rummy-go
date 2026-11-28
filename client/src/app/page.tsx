@@ -16,18 +16,18 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
-import { InviteToast } from "../components/lobby/InviteToast";
-import { useSocket } from "../hooks/useSocket";
+import { FriendsDrawer } from "../components/friends/FriendsDrawer";
 import { api } from "../lib/api";
 import { useAuthStore } from "../store/useAuthStore";
-import { FriendItem, MatchHistoryItem } from "../types";
+import { useFriendsStore } from "../store/useFriendsStore";
+import { MatchHistoryItem } from "../types";
 
 export default function HomePage() {
   const router = useRouter();
   const { user, isAuthenticated, initAuth, logout } = useAuthStore();
-
-  // Keep Socket.IO connected while authenticated for live online presence & room invitations
-  useSocket(undefined, { autoJoin: false });
+  const friends = useFriendsStore((s) => s.friends);
+  const pendingRequests = useFriendsStore((s) => s.pendingRequests);
+  const fetchFriends = useFriendsStore((s) => s.fetchFriends);
 
   const [joinCode, setJoinCode] = useState("");
   const [roomName, setRoomName] = useState("");
@@ -37,10 +37,10 @@ export default function HomePage() {
   const [entryPoints, setEntryPoints] = useState(80);
   const [roomPassword, setRoomPassword] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
+  const [showFriendsDrawer, setShowFriendsDrawer] = useState(false);
   const [actionLoading, setActionLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const [friends, setFriends] = useState<FriendItem[]>([]);
   const [history, setHistory] = useState<MatchHistoryItem[]>([]);
 
   useEffect(() => {
@@ -49,12 +49,13 @@ export default function HomePage() {
 
   useEffect(() => {
     if (isAuthenticated) {
-      api.getFriends().then((res) => setFriends(res.friends)).catch(() => {});
+      void fetchFriends();
       api.getHistory().then((res) => setHistory(res.history)).catch(() => {});
     }
-  }, [isAuthenticated]);
+  }, [isAuthenticated, fetchFriends]);
 
   const onlineFriendsCount = friends.filter((f) => f.isOnline).length;
+  const pendingRequestsCount = pendingRequests.length;
 
   const handleCreateRoom = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -112,7 +113,10 @@ export default function HomePage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-950 via-zinc-950 to-black text-white flex flex-col">
-      <InviteToast />
+      <FriendsDrawer
+        open={showFriendsDrawer}
+        onClose={() => setShowFriendsDrawer(false)}
+      />
 
       {/* Top Header */}
       <header className="w-full flex items-center justify-between px-6 py-4 bg-zinc-950/80 backdrop-blur-md border-b border-zinc-800">
@@ -129,20 +133,39 @@ export default function HomePage() {
         {/* User Profile Bar */}
         <div className="flex items-center gap-2.5 sm:gap-3">
           {isAuthenticated && user ? (
-            <div className="flex items-center gap-2 sm:gap-3">
-              <Link
-                href="/profile"
-                className="flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 border border-amber-500/30 text-xs font-bold transition"
-                title="View Profile & Friends"
+            <div className="flex items-center gap-2 sm:gap-2.5">
+              {/* Friends Drawer Button with Live Online Count & Pending Request Unread Badge */}
+              <button
+                type="button"
+                onClick={() => setShowFriendsDrawer(true)}
+                className="relative flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-amber-300 hover:text-amber-200 border border-amber-500/35 text-xs font-bold transition shadow-sm"
+                title="Open Friends & Requests"
               >
-                <UserIcon className="w-3.5 h-3.5" />
-                <span className="hidden sm:inline">Profile & Friends</span>
-                <span className="sm:hidden">Profile</span>
+                <Users className="w-3.5 h-3.5" />
+                <span>Friends</span>
                 {onlineFriendsCount > 0 && (
-                  <span className="ml-0.5 px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-bold">
+                    <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
                     {onlineFriendsCount}
                   </span>
                 )}
+                {pendingRequestsCount > 0 && (
+                  <span
+                    className="absolute -top-1.5 -right-1.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-black flex items-center justify-center shadow-lg border border-zinc-950"
+                    title={`${pendingRequestsCount} pending friend request(s)`}
+                  >
+                    {pendingRequestsCount}
+                  </span>
+                )}
+              </button>
+
+              <Link
+                href="/profile"
+                className="hidden md:flex items-center gap-1.5 px-3 py-2 rounded-xl bg-zinc-900 hover:bg-zinc-800 text-zinc-200 hover:text-white border border-zinc-800 text-xs font-bold transition"
+                title="View Profile & Match History"
+              >
+                <UserIcon className="w-3.5 h-3.5 text-amber-400" />
+                <span>Profile</span>
               </Link>
 
               <Link

@@ -10,7 +10,6 @@ import {
 import { useParams, useRouter } from "next/navigation";
 import React, { useEffect, useState } from "react";
 import { Table } from "@/components/game/Table";
-import { InviteToast } from "@/components/lobby/InviteToast";
 import { LobbyView } from "@/components/lobby/LobbyView";
 import { VideoOverlay } from "@/components/video/VideoOverlay";
 import { useSocket } from "@/hooks/useSocket";
@@ -46,10 +45,18 @@ export default function RoomPage() {
     undefined
   );
   const [joiningGuest, setJoiningGuest] = useState(false);
+  const [isDirectInvited, setIsDirectInvited] = useState(false);
 
   useEffect(() => {
     initAuth();
   }, [initAuth]);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      const search = new URLSearchParams(window.location.search);
+      setIsDirectInvited(search.get("invited") === "1");
+    }
+  }, [roomCode]);
 
   // Fetch room metadata
   useEffect(() => {
@@ -98,7 +105,10 @@ export default function RoomPage() {
       !roomLoading &&
       !isRoomNotFound &&
       !kickedMessage &&
-      (!roomData?.hasPassword || isRoomHost || Boolean(submittedPassword))
+      (!roomData?.hasPassword ||
+        isRoomHost ||
+        isDirectInvited ||
+        Boolean(submittedPassword))
   );
 
   // Initialize socket hook
@@ -319,8 +329,8 @@ export default function RoomPage() {
     );
   }
 
-  // Authenticated user joining a password-protected room (non-host, not yet joined)
-  if (roomData?.hasPassword && !isRoomHost && !isInRoom) {
+  // Authenticated user joining a password-protected room (non-host, not yet joined, not directly invited)
+  if (roomData?.hasPassword && !isRoomHost && !isInRoom && !isDirectInvited) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-950 text-white p-4">
         <div className="w-full max-w-md rounded-3xl bg-zinc-900 border border-amber-500/40 p-6 sm:p-8 shadow-2xl">
@@ -387,7 +397,6 @@ export default function RoomPage() {
   // Persistent LiveKit VideoOverlay stays mounted across WAITING, TOSS, PLAYING, ROUND_END, GAME_OVER & RESTART_MATCH
   return (
     <VideoOverlay roomCode={roomCode}>
-      <InviteToast />
       {isActiveGameView ? (
         <div className="h-[100dvh] w-full overflow-hidden">
           <Table

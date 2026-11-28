@@ -14,15 +14,10 @@ import {
 import Image from "next/image";
 import Link from "next/link";
 import React, { useCallback, useEffect, useState } from "react";
-import { InviteToast } from "../../components/lobby/InviteToast";
-import { useSocket } from "../../hooks/useSocket";
 import { api } from "../../lib/api";
 import { useAuthStore } from "../../store/useAuthStore";
-import {
-  FriendItem,
-  MatchHistoryItem,
-  PendingFriendRequest,
-} from "../../types";
+import { useFriendsStore } from "../../store/useFriendsStore";
+import { MatchHistoryItem } from "../../types";
 
 const AVATAR_PRESET_SEEDS = [
   "Ace",
@@ -48,16 +43,18 @@ function extractAvatarSeed(profileImage: string | undefined, fallback: string): 
 
 export default function ProfilePage() {
   const { user, isAuthenticated, initAuth, updateUser } = useAuthStore();
+  const {
+    friends,
+    pendingRequests,
+    loading: refreshingFriends,
+    fetchFriends,
+    sendFriendRequest,
+    respondFriendRequest,
+  } = useFriendsStore();
 
-  // Keep Socket.IO connected while authenticated for live online presence & invitations
-  useSocket(undefined, { autoJoin: false });
-
-  const [friends, setFriends] = useState<FriendItem[]>([]);
-  const [pendingRequests, setPendingRequests] = useState<PendingFriendRequest[]>([]);
   const [history, setHistory] = useState<MatchHistoryItem[]>([]);
   const [searchUsername, setSearchUsername] = useState("");
   const [message, setMessage] = useState<{ text: string; tone: "ok" | "err" } | null>(null);
-  const [refreshingFriends, setRefreshingFriends] = useState(false);
 
   // Edit profile state
   const [isEditingProfile, setIsEditingProfile] = useState(false);
@@ -75,16 +72,8 @@ export default function ProfilePage() {
   }, []);
 
   const loadFriends = useCallback(() => {
-    setRefreshingFriends(true);
-    api
-      .getFriends()
-      .then((res) => {
-        setFriends(res.friends ?? []);
-        setPendingRequests(res.pendingRequests ?? []);
-      })
-      .catch(() => {})
-      .finally(() => setRefreshingFriends(false));
-  }, []);
+    void fetchFriends();
+  }, [fetchFriends]);
 
   const loadHistory = useCallback(() => {
     api
@@ -142,7 +131,7 @@ export default function ProfilePage() {
     e.preventDefault();
     if (!searchUsername.trim()) return;
     try {
-      await api.sendFriendRequest(searchUsername.trim());
+      await sendFriendRequest(searchUsername.trim());
       showNotice(`Friend request sent to ${searchUsername.trim()}!`, "ok");
       setSearchUsername("");
     } catch (err: unknown) {
@@ -155,8 +144,7 @@ export default function ProfilePage() {
 
   const handleRespond = async (requestId: string, action: "ACCEPT" | "REJECT") => {
     try {
-      await api.respondFriendRequest(requestId, action);
-      loadFriends();
+      await respondFriendRequest(requestId, action === "REJECT" ? "DECLINE" : "ACCEPT");
       showNotice(
         action === "ACCEPT" ? "Friend request accepted!" : "Friend request declined.",
         "ok"
@@ -197,8 +185,6 @@ export default function ProfilePage() {
 
   return (
     <div className="min-h-screen bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-950 via-zinc-950 to-black text-white p-4 sm:p-8">
-      <InviteToast />
-
       <div className="max-w-4xl mx-auto">
         <Link
           href="/"

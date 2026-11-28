@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useRef } from "react";
 import { io, Socket } from "socket.io-client";
 import { getSocketServerUrl } from "../lib/serverUrl";
+import { getActiveSocket, setActiveSocket } from "../lib/socketRegistry";
 import { soundEffects } from "../lib/soundEffects";
 import { useAuthStore } from "../store/useAuthStore";
+import { useFriendsStore } from "../store/useFriendsStore";
 import { useGameStore } from "../store/useGameStore";
 import {
   Card,
+  FriendPresenceUpdate,
   LobbyPlayer,
   PublicGameState,
   RoomInvite,
@@ -16,11 +19,13 @@ import {
 export interface UseSocketOptions {
   autoJoin?: boolean;
   password?: string;
+  enabled?: boolean;
 }
 
 export function useSocket(roomCode?: string, options?: UseSocketOptions) {
   const socketRef = useRef<Socket | null>(null);
   const errorTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const enabled = options?.enabled ?? true;
   const autoJoin = options?.autoJoin ?? true;
   const autoJoinRef = useRef<boolean>(autoJoin);
   const passwordRef = useRef<string | undefined>(options?.password);
@@ -47,7 +52,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
   } = useGameStore();
 
   useEffect(() => {
-    if (!token) return;
+    if (!token || !enabled) return;
 
     const socket = io(getSocketServerUrl(), {
       auth: { token },
@@ -57,6 +62,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     });
 
     socketRef.current = socket;
+    setActiveSocket(socket);
     joinedRoomRef.current = null;
 
     socket.on("connect", () => {
@@ -98,14 +104,37 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     });
 
     socket.on("ROOM_INVITE_RECEIVED", (invite: RoomInvite) => {
+      const fromName =
+        invite.fromUser?.name || invite.fromUsername || "Your friend";
+      const fromId = invite.fromUser?.id || invite.fromUserId;
       setPendingInvite({
+        inviteId: invite.inviteId,
         roomCode: invite.roomCode,
         roomName: invite.roomName,
-        fromUsername: invite.fromUsername,
-        fromUserId: invite.fromUserId,
+        fromUser: fromId ? { id: fromId, name: fromName } : undefined,
+        fromUsername: fromName,
+        fromUserId: fromId,
+        targetPoints: invite.targetPoints ?? 101,
+        playerCount: invite.playerCount,
+        maxPlayers: invite.maxPlayers,
         timestamp: invite.timestamp ?? Date.now(),
       });
       soundEffects.playInviteChime(useGameStore.getState().isMuted);
+    });
+
+    socket.on("FRIEND_PRESENCE_UPDATE", (update: FriendPresenceUpdate) => {
+      if (update && typeof update.userId === "string") {
+        useFriendsStore.getState().applyPresenceUpdate(update);
+      }
+    });
+
+    socket.on("FRIEND_REQUEST_RECEIVED", () => {
+      void useFriendsStore.getState().fetchFriends();
+      soundEffects.playInviteChime(useGameStore.getState().isMuted);
+    });
+
+    socket.on("FRIENDSHIP_UPDATED", () => {
+      void useFriendsStore.getState().fetchFriends();
     });
 
     socket.on("CHAT_MESSAGE", (msg: TableChatMessage) => {
@@ -137,12 +166,16 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
         clearTimeout(errorTimerRef.current);
         errorTimerRef.current = null;
       }
+      if (getActiveSocket() === socket) {
+        setActiveSocket(null);
+      }
       socket.disconnect();
       socketRef.current = null;
       joinedRoomRef.current = null;
     };
   }, [
     token,
+    enabled,
     roomCode,
     setGameState,
     setPrivateHand,
@@ -245,12 +278,25 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     socketRef.current?.emit("SORT_HAND", { by });
   }, []);
 
-  const inviteFriend = useCallback((friendId: string, targetRoomCode: string) => {
-    socketRef.current?.emit("INVITE_FRIEND", {
-      friendId,
-      roomCode: targetRoomCode,
-    });
-  }, []);
+  const inviteFriend = useCallback(
+    (targetUserId: string, targetRoomCode: string) => {
+      socketRef.current?.emit("SEND_ROOM_INVITE", {
+        targetUserId,
+        roomCode: targetRoomCode,
+      });
+    },
+    []
+  );
+
+  const acceptRoomInvite = useCallback(
+    (inviteId: string | undefined, targetRoomCode: string) => {
+      socketRef.current?.emit("ACCEPT_ROOM_INVITE", {
+        inviteId,
+        roomCode: targetRoomCode,
+      });
+    },
+    []
+  );
 
   const sendChatMessage = useCallback((text: string) => {
     const trimmed = text.trim();
@@ -280,6 +326,7 @@ export function useSocket(roomCode?: string, options?: UseSocketOptions) {
     dropGame,
     sortHand,
     inviteFriend,
+    acceptRoomInvite,
     sendChatMessage,
     sendReaction,
   };
